@@ -1,0 +1,100 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap');
+
+:root {
+    --bg-grad-a: #f4f8ff;
+    --bg-grad-b: #fff8ef;
+    --brand: #0c63e7;
+    --accent: #ff7a00;
+}
+
+body {
+    font-family: 'Outfit', sans-serif;
+    background: radial-gradient(circle at top left, var(--bg-grad-a), var(--bg-grad-b));
+    min-height: 100vh;
+}
+
+.sidebar {
+    width: 240px;
+    background: linear-gradient(180deg, #0b3b78, #0c63e7);
+    color: #fff;
+    min-height: 100vh;
+}
+
+.sidebar .nav-link {
+    color: #d9e9ff;
+    border-radius: 10px;
+}
+
+.sidebar .nav-link:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+}
+
+.topbar {
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+    backdrop-filter: blur(4px);
+    background: rgba(255, 255, 255, 0.75);
+}
+
+.content-area {
+    min-height: 100vh;
+}
+
+.card {
+    border: none;
+    border-radius: 14px;
+}
+
+.card-stat {
+    background: linear-gradient(145deg, #ffffff, #f4f7ff);
+}
+
+.badge-pending {
+    background-color: #f7c948;
+    color: #000;
+}
+
+.badge-approved {
+    background-color: #2f9e44;
+}
+
+.badge-rejected {
+    background-color: #d6336c;
+}
+
+.badge-paid {
+    background-color: #1c7ed6;
+}
+
+.new-row {
+    animation: pulseHighlight 1.5s ease-in-out infinite alternate;
+}
+
+@keyframes pulseHighlight {
+    from {
+        background-color: rgba(255, 230, 0, 0.08);
+    }
+    to {
+        background-color: rgba(255, 230, 0, 0.25);
+    }
+}
+
+.login-bg {
+    background: linear-gradient(160deg, #dae9ff, #fff6e9 60%, #fff);
+}
+
+@media (max-width: 991px) {
+    .sidebar {
+        width: 70px;
+        padding: 8px !important;
+    }
+
+    .sidebar h5 {
+        display: none;
+    }
+
+    .sidebar .nav-link {
+        font-size: 12px;
+        text-align: center;
+    }
+}

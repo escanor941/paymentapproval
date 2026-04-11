@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% set title = 'Master Data Management' %}
+{% block content %}
+<div class="card p-3">
+    <div class="row g-2 align-items-end">
+        <div class="col-md-3"><label class="form-label">Master Type</label><select id="masterType" class="form-select"><option value="users">Users</option><option value="factories">Factories</option><option value="vendors">Vendors</option><option value="categories">Item Categories</option><option value="units">Units</option><option value="payment-modes">Payment Modes</option></select></div>
+        <div class="col-md-3"><label class="form-label">Name</label><input id="mName" class="form-control"></div>
+        <div class="col-md-2"><label class="form-label">Extra 1</label><input id="mExtra1" class="form-control"></div>
+        <div class="col-md-2"><label class="form-label">Extra 2</label><input id="mExtra2" class="form-control"></div>
+        <div class="col-md-2"><label class="form-label">Extra 3</label><input id="mExtra3" class="form-control"></div>
+    </div>
+    <small class="text-muted mt-2 d-block">For Users: Extra1=Username, Extra2=Role(admin/factory), Extra3=Password.</small>
+    <small class="text-muted d-block">For Factories: Extra1=Location. For Vendors: Extra1=Mobile, Extra2=Address, Extra3=GST.</small>
+    <div class="d-flex gap-2 mt-2">
+        <button class="btn btn-primary" onclick="createMaster()">Add</button>
+        <button class="btn btn-outline-secondary" onclick="loadMaster()">Refresh</button>
+    </div>
+</div>
+<div class="card mt-3 p-3">
+    <div class="table-responsive">
+        <table class="table table-sm" id="masterTable">
+            <thead><tr><th>ID</th><th>Name</th><th>Details</th><th>Actions</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', path='/js/masters.js') }}"></script>
+{% endblock %}

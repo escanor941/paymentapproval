@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: factory-purchase-approval
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash start.sh
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: AUTO_CREATE_SCHEMA
+        value: "true"
+      - key: STORAGE_BACKEND
+        value: "local"
+      - key: UPLOAD_DIR
+        value: "/var/data/uploads"
+
+# Optional persistent disk setup (recommended for local file uploads):
+# disks:
+#   - name: uploads-disk
+#     mountPath: /var/data
+#     sizeGB: 5

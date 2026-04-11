@@ -1,0 +1,56 @@
+{% extends 'base.html' %}
+{% set title = 'Factory User Panel' %}
+{% block content %}
+<div class="row g-3">
+    <div class="col-lg-5">
+        <div class="card p-3">
+            <h6>Create Purchase Request</h6>
+            <form id="requestForm" enctype="multipart/form-data">
+                <div class="row g-2">
+                    <div class="col-md-6"><label class="form-label">Request Date</label><input name="request_date" type="date" class="form-control" required></div>
+                    <div class="col-md-6"><label class="form-label">Factory</label><select name="factory_id" class="form-select" required>{% for x in factories %}<option value="{{ x.id }}">{{ x.name }}</option>{% endfor %}</select></div>
+                    <div class="col-md-6"><label class="form-label">Vendor</label><select name="vendor_id" class="form-select" required>{% for x in vendors %}<option value="{{ x.id }}">{{ x.name }}</option>{% endfor %}</select></div>
+                    <div class="col-md-6"><label class="form-label">Vendor Mobile</label><input name="vendor_mobile" class="form-control"></div>
+                    <div class="col-md-6"><label class="form-label">Item Category</label><select name="item_category" class="form-select" required>{% for x in categories %}<option>{{ x.name }}</option>{% endfor %}</select></div>
+                    <div class="col-md-6"><label class="form-label">Item Name</label><input name="item_name" class="form-control" required></div>
+                    <div class="col-md-4"><label class="form-label">Qty</label><input name="qty" id="qty" type="number" step="0.01" class="form-control" required></div>
+                    <div class="col-md-4"><label class="form-label">Unit</label><select name="unit" class="form-select" required>{% for x in units %}<option>{{ x.name }}</option>{% endfor %}</select></div>
+                    <div class="col-md-4"><label class="form-label">Rate</label><input name="rate" id="rate" type="number" step="0.01" class="form-control" required></div>
+                    <div class="col-md-4"><label class="form-label">Amount</label><input name="amount" id="amount" type="number" step="0.01" class="form-control" readonly></div>
+                    <div class="col-md-4"><label class="form-label">GST %</label><input name="gst_percent" id="gst" type="number" step="0.01" class="form-control" value="0"></div>
+                    <div class="col-md-4"><label class="form-label">Final Amount</label><input name="final_amount" id="final_amount" type="number" step="0.01" class="form-control" readonly></div>
+                    <div class="col-12"><label class="form-label">Reason / Urgency</label><textarea name="reason" class="form-control" required></textarea></div>
+                    <div class="col-md-6"><label class="form-label">Payment Needed Today?</label><select name="urgent_flag" class="form-select"><option value="false">No</option><option value="true">Yes</option></select></div>
+                    <div class="col-md-6"><label class="form-label">Requested By</label><input name="requested_by" class="form-control" value="{{ user.name }}" required></div>
+                    <div class="col-12"><label class="form-label">Upload Bill / Quotation Image</label><input type="file" name="bill_image" class="form-control" accept="image/*"></div>
+                    <div class="col-12"><label class="form-label">Notes</label><textarea name="notes" class="form-control"></textarea></div>
+                </div>
+                <div class="d-flex gap-2 mt-3">
+                    <button class="btn btn-primary btn-lg flex-fill" type="submit">Submit Request</button>
+                    <button class="btn btn-warning btn-lg" type="button" onclick="saveDraft()">Save Draft</button>
+                    <button class="btn btn-outline-secondary btn-lg" type="reset">Reset</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <div class="col-lg-7">
+        <div class="card p-3">
+            <div class="row g-2 mb-2">
+                <div class="col-md-4"><input id="fsDate" type="date" class="form-control"></div>
+                <div class="col-md-4"><input id="fsVendor" class="form-control" placeholder="Search vendor"></div>
+                <div class="col-md-4"><select id="fsStatus" class="form-select"><option value="">All status</option><option>Draft</option><option>Pending</option><option>Approved</option><option>Rejected</option><option>Hold</option></select></div>
+            </div>
+            <button class="btn btn-sm btn-outline-primary mb-2" onclick="loadOwnRequests()">Search</button>
+            <div class="table-responsive">
+                <table class="table table-sm" id="ownTable">
+                    <thead><tr><th>ID</th><th>Date</th><th>Vendor</th><th>Item</th><th>Amount</th><th>Approval</th><th>Payment</th><th>Actions</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', path='/js/factory.js') }}"></script>
+{% endblock %}
