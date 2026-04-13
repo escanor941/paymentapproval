@@ -25,7 +25,7 @@
                     <div class="col-12"><label class="form-label">Upload Bill / Quotation Image</label><input type="file" name="bill_image" class="form-control" accept="image/*"></div>
                     <div class="col-12"><label class="form-label">Notes</label><textarea name="notes" class="form-control"></textarea></div>
                 </div>
-                <div class="d-flex gap-2 mt-3">
+                <div class="factory-actions mt-3">
                     <button class="btn btn-primary btn-lg flex-fill" type="submit">Submit Request</button>
                     <button class="btn btn-warning btn-lg" type="button" onclick="saveDraft()">Save Draft</button>
                     <button class="btn btn-outline-secondary btn-lg" type="reset">Reset</button>
@@ -35,7 +35,7 @@
     </div>
     <div class="col-lg-7">
         <div class="card p-3">
-            <div class="row g-2 mb-2">
+            <div class="row g-2 mb-2 factory-filters">
                 <div class="col-md-4"><input id="fsDate" type="date" class="form-control"></div>
                 <div class="col-md-4"><input id="fsVendor" class="form-control" placeholder="Search vendor"></div>
                 <div class="col-md-4"><select id="fsStatus" class="form-select"><option value="">All status</option><option>Draft</option><option>Pending</option><option>Approved</option><option>Rejected</option><option>Hold</option></select></div>

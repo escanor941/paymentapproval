@@ -98,3 +98,118 @@ body {
         text-align: center;
     }
 }
+
+.factory-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+@media (max-width: 767px) {
+    #wrapper {
+        flex-direction: column;
+    }
+
+    .sidebar {
+        width: 100%;
+        min-height: auto;
+        padding: 0.6rem 0.75rem !important;
+    }
+
+    .sidebar h5 {
+        display: block;
+        margin-bottom: 0.5rem !important;
+        font-size: 1rem;
+    }
+
+    .sidebar .nav {
+        flex-direction: row !important;
+        gap: 0.5rem !important;
+        overflow-x: auto;
+        white-space: nowrap;
+    }
+
+    .sidebar .nav-link {
+        font-size: 0.85rem;
+        text-align: left;
+        padding: 0.35rem 0.65rem;
+    }
+
+    .topbar {
+        flex-wrap: wrap;
+        gap: 0.5rem;
+    }
+
+    .topbar h6 {
+        width: 100%;
+    }
+
+    .content-area {
+        min-height: auto;
+    }
+
+    .factory-actions {
+        display: grid;
+        grid-template-columns: 1fr;
+    }
+
+    .factory-actions .btn {
+        width: 100%;
+    }
+
+    .form-control,
+    .form-select,
+    .btn {
+        font-size: 16px;
+    }
+
+    #ownTable thead {
+        display: none;
+    }
+
+    #ownTable,
+    #ownTable tbody,
+    #ownTable tr,
+    #ownTable td {
+        display: block;
+        width: 100%;
+    }
+
+    #ownTable tr {
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        border-radius: 12px;
+        padding: 0.5rem;
+        margin-bottom: 0.65rem;
+        background: #fff;
+    }
+
+    #ownTable td {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+        padding: 0.35rem 0.25rem;
+        border: 0;
+        font-size: 0.92rem;
+    }
+
+    #ownTable td::before {
+        content: attr(data-label);
+        color: #6c757d;
+        font-weight: 600;
+        flex-shrink: 0;
+    }
+
+    #ownTable td.actions-cell {
+        display: block;
+    }
+
+    #ownTable td.actions-cell::before {
+        display: block;
+        margin-bottom: 0.35rem;
+    }
+
+    #ownTable td.actions-cell .btn {
+        margin-right: 0.3rem;
+        margin-bottom: 0.3rem;
+    }
+}

@@ -83,14 +83,14 @@ async function loadOwnRequests() {
   data.items.forEach(item => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${item.id}</td>
-      <td>${item.request_date}</td>
-      <td>${item.vendor || ''}</td>
-      <td>${item.item_name}</td>
-      <td>${item.final_amount.toFixed ? item.final_amount.toFixed(2) : item.final_amount}</td>
-      <td>${badge(item.approval_status)}</td>
-      <td>${badge(item.payment_status)}</td>
-      <td>
+      <td data-label="ID">${item.id}</td>
+      <td data-label="Date">${item.request_date}</td>
+      <td data-label="Vendor">${item.vendor || ''}</td>
+      <td data-label="Item">${item.item_name}</td>
+      <td data-label="Amount">${item.final_amount.toFixed ? item.final_amount.toFixed(2) : item.final_amount}</td>
+      <td data-label="Approval">${badge(item.approval_status)}</td>
+      <td data-label="Payment">${badge(item.payment_status)}</td>
+      <td data-label="Actions" class="actions-cell">
         ${['Pending','Draft','Hold'].includes(item.approval_status) ? `<button class="btn btn-sm btn-outline-primary" onclick="editOwn(${item.id})">Edit</button>` : ''}
         ${['Pending','Draft','Hold'].includes(item.approval_status) ? `<button class="btn btn-sm btn-outline-danger" onclick="deleteOwn(${item.id})">Delete</button>` : ''}
         ${item.bill_image_path ? `<a class="btn btn-sm btn-outline-secondary" target="_blank" href="${item.bill_image_path}">Bill</a>` : ''}
