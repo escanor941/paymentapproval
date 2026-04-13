@@ -6,6 +6,8 @@ const gstInput = document.getElementById('gst');
 const amountInput = document.getElementById('amount');
 const finalAmountInput = document.getElementById('final_amount');
 const flashBox = document.getElementById('factoryFlash');
+const simpleBillForm = document.getElementById('simpleBillForm');
+const simpleBillFlashBox = document.getElementById('simpleBillFlash');
 let editRequestId = null;
 
 function showFlash(message, type = 'success') {
@@ -13,6 +15,14 @@ function showFlash(message, type = 'success') {
   flashBox.innerHTML = `<div class="alert alert-${type} py-2 mb-0">${message}</div>`;
   setTimeout(() => {
     flashBox.innerHTML = '';
+  }, 3000);
+}
+
+function showSimpleFlash(message, type = 'success') {
+  if (!simpleBillFlashBox) return;
+  simpleBillFlashBox.innerHTML = `<div class="alert alert-${type} py-2 mb-0">${message}</div>`;
+  setTimeout(() => {
+    simpleBillFlashBox.innerHTML = '';
   }, 3000);
 }
 
@@ -35,6 +45,13 @@ if (requestForm) {
   requestForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     await submitRequest(false);
+  });
+}
+
+if (simpleBillForm) {
+  simpleBillForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await submitSimpleBill();
   });
 }
 
@@ -85,6 +102,35 @@ async function saveDraft() {
   await submitRequest(true);
 }
 window.saveDraft = saveDraft;
+
+async function submitSimpleBill() {
+  if (!simpleBillForm) return;
+  const fd = new FormData(simpleBillForm);
+  const billFile = fd.get('bill_image');
+  const vendorName = (fd.get('vendor_name') || '').toString().trim();
+  if (!vendorName) {
+    showSimpleFlash('Vendor name is required.', 'danger');
+    return;
+  }
+  if (!billFile || billFile.size === 0) {
+    showSimpleFlash('Actual bill image is required.', 'danger');
+    return;
+  }
+
+  try {
+    const res = await fetch('/requests/simple-bill', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) {
+      showSimpleFlash(data.detail || 'Failed to upload bill', 'danger');
+      return;
+    }
+    showSimpleFlash(data.message || 'Bill uploaded', 'success');
+    simpleBillForm.reset();
+    loadOwnRequests();
+  } catch (err) {
+    showSimpleFlash('Network error while uploading bill', 'danger');
+  }
+}
 
 function badge(status) {
   if (status === 'Pending') return '<span class="badge badge-pending">Pending</span>';

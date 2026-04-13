@@ -1,6 +1,17 @@
 {% extends 'base.html' %}
 {% set title = 'Factory User Panel' %}
 {% block content %}
+<ul class="nav nav-tabs mb-3" id="factoryTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="request-tab" data-bs-toggle="tab" data-bs-target="#requestPane" type="button" role="tab" aria-controls="requestPane" aria-selected="true">Create Request</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="simple-bill-tab" data-bs-toggle="tab" data-bs-target="#simpleBillPane" type="button" role="tab" aria-controls="simpleBillPane" aria-selected="false">Simple Bill Upload</button>
+    </li>
+</ul>
+
+<div class="tab-content">
+<div class="tab-pane fade show active" id="requestPane" role="tabpanel" aria-labelledby="request-tab" tabindex="0">
 <div class="row g-3">
     <div class="col-lg-5">
         <div class="card p-3">
@@ -50,6 +61,35 @@
             </div>
         </div>
     </div>
+</div>
+</div>
+
+<div class="tab-pane fade" id="simpleBillPane" role="tabpanel" aria-labelledby="simple-bill-tab" tabindex="0">
+    <div class="row g-3">
+        <div class="col-lg-6">
+            <div class="card p-3">
+                <h6>Upload Actual Bill (Quick)</h6>
+                <div id="simpleBillFlash" class="mb-2"></div>
+                <form id="simpleBillForm" enctype="multipart/form-data">
+                    <div class="row g-2">
+                        <div class="col-12">
+                            <label class="form-label">Vendor Name <span class="text-danger">*</span></label>
+                            <input name="vendor_name" class="form-control" placeholder="Vendor name" required>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Actual Bill Image <span class="text-danger">*</span></label>
+                            <input type="file" name="bill_image" class="form-control" accept="image/*" required>
+                        </div>
+                    </div>
+                    <div class="factory-actions mt-3">
+                        <button class="btn btn-primary btn-lg flex-fill" type="submit">Upload Bill</button>
+                        <button class="btn btn-outline-secondary btn-lg" type="reset">Reset</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
 </div>
 {% endblock %}
 {% block scripts %}

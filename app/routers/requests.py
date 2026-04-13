@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.deps import admin_required, get_current_user
-from app.models import Payment, PurchaseRequest, User, Vendor
+from app.models import Factory, Payment, PurchaseRequest, User, Vendor
 from app.utils.audit import log_change
 from app.utils.storage import save_upload
 
@@ -117,6 +117,72 @@ def create_request(
     log_change(db, entity="purchase_request", entity_id=req.id, action="CREATE", new_value=_as_dict(req), changed_by=user.id)
     db.commit()
     return {"message": "Request saved", "id": req.id}
+
+
+@router.post("/requests/simple-bill")
+def create_simple_bill_upload(
+    vendor_name: str = Form(...),
+    bill_image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if user.role != "factory":
+        raise HTTPException(403, "Only factory users can upload from this tab")
+
+    clean_vendor_name = (vendor_name or "").strip()
+    if not clean_vendor_name:
+        raise HTTPException(400, "Vendor name is required")
+
+    bill_path = _save_file(bill_image)
+    if not bill_path:
+        raise HTTPException(400, "Actual bill image is required")
+
+    default_factory = db.scalar(
+        select(Factory).where(Factory.is_deleted.is_(False)).order_by(Factory.id.asc())
+    )
+    default_vendor = db.scalar(
+        select(Vendor).where(Vendor.is_deleted.is_(False)).order_by(Vendor.id.asc())
+    )
+    if not default_factory:
+        raise HTTPException(400, "No active factory found in masters")
+    if not default_vendor:
+        raise HTTPException(400, "No active vendor found in masters")
+
+    req = PurchaseRequest(
+        request_date=date.today(),
+        factory_id=default_factory.id,
+        vendor_id=default_vendor.id,
+        vendor_mobile=clean_vendor_name,
+        item_category="Bill Upload",
+        item_name="Actual Bill Upload",
+        qty=1,
+        unit="Nos",
+        rate=1,
+        amount=1,
+        gst_percent=0,
+        final_amount=1,
+        reason="Actual bill uploaded via simple tab",
+        urgent_flag=False,
+        requested_by=user.name,
+        requested_by_user_id=user.id,
+        bill_image_path=bill_path,
+        notes="Simple bill upload",
+        approval_status="Pending",
+        payment_status="Unpaid",
+        is_unread_admin=True,
+    )
+    db.add(req)
+    db.flush()
+    log_change(
+        db,
+        entity="purchase_request",
+        entity_id=req.id,
+        action="CREATE_SIMPLE_BILL",
+        new_value=_as_dict(req),
+        changed_by=user.id,
+    )
+    db.commit()
+    return {"message": "Bill uploaded", "id": req.id}
 
 
 @router.get("/requests")

@@ -1,4 +1,5 @@
 const reqBody = document.querySelector('#reqTable tbody');
+const simpleBillBody = document.querySelector('#billUploadTable tbody');
 let prevUnread = 0;
 
 function b(status) {
@@ -59,6 +60,27 @@ async function loadRequests() {
   });
 }
 window.loadRequests = loadRequests;
+
+async function loadSimpleBills() {
+  if (!simpleBillBody) return;
+  const res = await fetch('/requests?item_category=Bill Upload');
+  const data = await res.json();
+  simpleBillBody.innerHTML = '';
+
+  (data.items || []).forEach(it => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${it.id}</td>
+      <td>${it.request_date}</td>
+      <td>${it.vendor || ''}</td>
+      <td>${it.requested_by || ''}</td>
+      <td>${b(it.approval_status)}</td>
+      <td>${it.bill_image_path ? `<a target="_blank" class="btn btn-sm btn-outline-secondary" href="${it.bill_image_path}">View Bill</a>` : '<span class="text-muted">No file</span>'}</td>
+    `;
+    simpleBillBody.appendChild(tr);
+  });
+}
+window.loadSimpleBills = loadSimpleBills;
 
 function clearFilters() {
   ['fFrom', 'fTo', 'fFactory', 'fVendor', 'fStatus', 'fPayment'].forEach(id => {
@@ -227,3 +249,4 @@ notifBtn?.addEventListener('click', async () => {
 setInterval(pollNotifications, 8000);
 pollNotifications();
 loadRequests();
+loadSimpleBills();

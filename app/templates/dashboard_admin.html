@@ -30,16 +30,47 @@
     </div>
 </div>
 
-<div class="card p-3">
-    <div class="table-responsive">
-        <table class="table table-sm align-middle" id="reqTable">
-            <thead>
-            <tr>
-                <th>ID</th><th>Date</th><th>Factory</th><th>Vendor</th><th>Item</th><th>Qty</th><th>Amount</th><th>Requested By</th><th>Approval</th><th>Payment</th><th>Actions</th>
-            </tr>
-            </thead>
-            <tbody></tbody>
-        </table>
+<ul class="nav nav-tabs mb-2" id="adminTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="requests-tab" data-bs-toggle="tab" data-bs-target="#requestsPane" type="button" role="tab" aria-controls="requestsPane" aria-selected="true">All Requests</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="bill-uploads-tab" data-bs-toggle="tab" data-bs-target="#billUploadsPane" type="button" role="tab" aria-controls="billUploadsPane" aria-selected="false">Simple Bill Uploads</button>
+    </li>
+</ul>
+
+<div class="tab-content">
+    <div class="tab-pane fade show active" id="requestsPane" role="tabpanel" aria-labelledby="requests-tab" tabindex="0">
+        <div class="card p-3">
+            <div class="table-responsive">
+                <table class="table table-sm align-middle" id="reqTable">
+                    <thead>
+                    <tr>
+                        <th>ID</th><th>Date</th><th>Factory</th><th>Vendor</th><th>Item</th><th>Qty</th><th>Amount</th><th>Requested By</th><th>Approval</th><th>Payment</th><th>Actions</th>
+                    </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="tab-pane fade" id="billUploadsPane" role="tabpanel" aria-labelledby="bill-uploads-tab" tabindex="0">
+        <div class="card p-3">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h6 class="mb-0">Factory Simple Bill Uploads</h6>
+                <button class="btn btn-sm btn-outline-primary" onclick="loadSimpleBills()">Refresh</button>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle" id="billUploadTable">
+                    <thead>
+                    <tr>
+                        <th>ID</th><th>Date</th><th>Vendor Name</th><th>Uploaded By</th><th>Status</th><th>Bill</th>
+                    </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
     </div>
 </div>
 
