@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,7 +42,10 @@ class MainActivity : AppCompatActivity() {
         webView.settings.domStorageEnabled = true
         webView.settings.allowFileAccess = true
         webView.settings.allowContentAccess = true
+        webView.settings.cacheMode = WebSettings.LOAD_NO_CACHE
         webView.settings.userAgentString = webView.settings.userAgentString + " FactoryApprovalAndroid/1.0"
+        webView.clearCache(true)
+        webView.clearHistory()
 
         webView.webViewClient = WebViewClient()
         webView.webChromeClient = object : WebChromeClient() {
