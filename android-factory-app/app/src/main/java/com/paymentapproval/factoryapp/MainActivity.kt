@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.MediaStore
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
@@ -12,16 +13,35 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private var cameraImageUri: Uri? = null
 
     private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val results = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
-        filePathCallback?.onReceiveValue(if (result.resultCode == Activity.RESULT_OK) results else null)
+        val parsedResults = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+        val finalResults = when {
+            result.resultCode != Activity.RESULT_OK -> null
+            !parsedResults.isNullOrEmpty() -> parsedResults
+            cameraImageUri != null -> arrayOf(cameraImageUri!!)
+            else -> null
+        }
+        filePathCallback?.onReceiveValue(finalResults)
         filePathCallback = null
+        cameraImageUri = null
+    }
+
+    private fun createImageUri(): Uri {
+        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val imageFile = File.createTempFile("bill_${timeStamp}_", ".jpg", cacheDir)
+        return FileProvider.getUriForFile(this, "${packageName}.fileprovider", imageFile)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -49,18 +69,23 @@ class MainActivity : AppCompatActivity() {
                 this@MainActivity.filePathCallback?.onReceiveValue(null)
                 this@MainActivity.filePathCallback = filePathCallback
 
-                val chooserIntent = try {
-                    fileChooserParams?.createIntent() ?: Intent(Intent.ACTION_GET_CONTENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
-                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-                    }
-                } catch (_: Exception) {
-                    Intent(Intent.ACTION_GET_CONTENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
-                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-                    }
+                val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "image/*"
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
+                }
+
+                val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).also { intent ->
+                    cameraImageUri = createImageUri()
+                    intent.putExtra(MediaStore.EXTRA_OUTPUT, cameraImageUri)
+                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                }
+
+                val chooserIntent = Intent(Intent.ACTION_CHOOSER).apply {
+                    putExtra(Intent.EXTRA_INTENT, galleryIntent)
+                    putExtra(Intent.EXTRA_TITLE, "Upload bill image")
+                    putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
                 }
 
                 filePickerLauncher.launch(chooserIntent)
