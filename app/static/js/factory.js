@@ -5,7 +5,16 @@ const rateInput = document.getElementById('rate');
 const gstInput = document.getElementById('gst');
 const amountInput = document.getElementById('amount');
 const finalAmountInput = document.getElementById('final_amount');
+const flashBox = document.getElementById('factoryFlash');
 let editRequestId = null;
+
+function showFlash(message, type = 'success') {
+  if (!flashBox) return;
+  flashBox.innerHTML = `<div class="alert alert-${type} py-2 mb-0">${message}</div>`;
+  setTimeout(() => {
+    flashBox.innerHTML = '';
+  }, 3000);
+}
 
 function calcAmounts() {
   const qty = parseFloat(qtyInput?.value || 0);
@@ -40,9 +49,20 @@ async function submitRequest(saveAsDraft) {
 
   const url = editRequestId ? `/requests/${editRequestId}` : '/requests';
   const method = editRequestId ? 'PUT' : 'POST';
-  const res = await fetch(url, { method, body: formData });
-  const data = await res.json();
-  alert(data.message || 'Saved');
+  try {
+    const res = await fetch(url, { method, body: formData });
+    const data = await res.json();
+    if (!res.ok) {
+      showFlash(data.detail || data.message || 'Failed to save request', 'danger');
+      return;
+    }
+
+    showFlash(data.message || 'Request saved', 'success');
+  } catch (err) {
+    showFlash('Network error while saving request', 'danger');
+    return;
+  }
+
   editRequestId = null;
   requestForm.reset();
   requestForm.querySelector('[name="request_date"]').value = new Date().toISOString().slice(0, 10);
@@ -105,7 +125,11 @@ async function deleteOwn(id) {
   if (!confirm('Delete this request?')) return;
   const res = await fetch(`/requests/${id}`, { method: 'DELETE' });
   const data = await res.json();
-  alert(data.message || 'Deleted');
+  if (!res.ok) {
+    showFlash(data.detail || 'Unable to delete request', 'danger');
+    return;
+  }
+  showFlash(data.message || 'Deleted', 'success');
   loadOwnRequests();
 }
 window.deleteOwn = deleteOwn;
