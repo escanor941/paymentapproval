@@ -19,11 +19,12 @@ def _compute_amounts(qty: float, rate: float, gst_percent: float) -> tuple[float
     return round(amount, 2), round(final_amount, 2)
 
 def _as_dict(req: PurchaseRequest) -> dict:
+    display_vendor = (req.vendor_mobile or "").strip() or (req.vendor.name if req.vendor else "")
     return {
         "id": req.id,
         "request_date": str(req.request_date),
         "factory_id": req.factory_id,
-        "vendor": req.vendor.name if req.vendor else "",
+        "vendor": display_vendor,
         "vendor_id": req.vendor_id,
         "item_category": req.item_category,
         "item_name": req.item_name,
