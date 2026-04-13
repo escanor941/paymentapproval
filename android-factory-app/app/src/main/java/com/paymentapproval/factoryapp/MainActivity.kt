@@ -1,6 +1,7 @@
 package com.paymentapproval.factoryapp
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -18,17 +19,8 @@ class MainActivity : AppCompatActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
 
     private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val uris = mutableListOf<Uri>()
-        val data = result.data
-
-        data?.data?.let { uris.add(it) }
-        data?.clipData?.let { clipData ->
-            for (i in 0 until clipData.itemCount) {
-                uris.add(clipData.getItemAt(i).uri)
-            }
-        }
-
-        filePathCallback?.onReceiveValue(if (uris.isEmpty()) null else uris.toTypedArray())
+        val results = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+        filePathCallback?.onReceiveValue(if (result.resultCode == Activity.RESULT_OK) results else null)
         filePathCallback = null
     }
 
@@ -57,13 +49,21 @@ class MainActivity : AppCompatActivity() {
                 this@MainActivity.filePathCallback?.onReceiveValue(null)
                 this@MainActivity.filePathCallback = filePathCallback
 
-                val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "*/*"
-                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                val chooserIntent = try {
+                    fileChooserParams?.createIntent() ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                    }
+                } catch (_: Exception) {
+                    Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                    }
                 }
 
-                filePickerLauncher.launch(Intent.createChooser(intent, "Select file"))
+                filePickerLauncher.launch(chooserIntent)
                 return true
             }
         }

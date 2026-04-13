@@ -11,7 +11,7 @@
                     <div class="col-md-6"><label class="form-label">Request Date</label><input name="request_date" type="date" class="form-control" required></div>
                     <div class="col-md-6"><label class="form-label">Factory</label><select name="factory_id" class="form-select" required>{% for x in factories %}<option value="{{ x.id }}">{{ x.name }}</option>{% endfor %}</select></div>
                     <div class="col-md-6"><label class="form-label">Vendor</label><select name="vendor_id" class="form-select" required>{% for x in vendors %}<option value="{{ x.id }}">{{ x.name }}</option>{% endfor %}</select></div>
-                    <div class="col-md-6"><label class="form-label">Vendor Mobile</label><input name="vendor_mobile" class="form-control"></div>
+                    <div class="col-md-6"><label class="form-label">Vendor Name</label><input name="vendor_mobile" class="form-control" placeholder="Vendor name"></div>
                     <div class="col-md-6"><label class="form-label">Item Category</label><select name="item_category" class="form-select" required>{% for x in categories %}<option>{{ x.name }}</option>{% endfor %}</select></div>
                     <div class="col-md-6"><label class="form-label">Item Name</label><input name="item_name" class="form-control" required></div>
                     <div class="col-md-4"><label class="form-label">Qty</label><input name="qty" id="qty" type="number" step="0.01" class="form-control" required></div>
@@ -23,7 +23,7 @@
                     <div class="col-12"><label class="form-label">Reason / Urgency</label><textarea name="reason" class="form-control" required></textarea></div>
                     <div class="col-md-6"><label class="form-label">Payment Needed Today?</label><select name="urgent_flag" class="form-select"><option value="false">No</option><option value="true">Yes</option></select></div>
                     <div class="col-md-6"><label class="form-label">Requested By</label><input name="requested_by" class="form-control" value="{{ user.name }}" required></div>
-                    <div class="col-12"><label class="form-label">Upload Bill / Quotation Image</label><input type="file" name="bill_image" class="form-control" accept="image/*"></div>
+                    <div class="col-12"><label class="form-label">Upload Bill / Quotation Image</label><input type="file" name="bill_image" class="form-control" accept="image/*" capture="environment"></div>
                     <div class="col-12"><label class="form-label">Notes</label><textarea name="notes" class="form-control"></textarea></div>
                 </div>
                 <div class="factory-actions mt-3">
