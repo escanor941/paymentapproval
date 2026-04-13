@@ -202,8 +202,6 @@ def list_requests(
 
     if user.role != "admin":
         query = query.where(PurchaseRequest.requested_by_user_id == user.id)
-        # Approved requests are automatically hidden from factory — admin-side only
-        query = query.where(PurchaseRequest.approval_status != "Approved")
 
     if from_date:
         query = query.where(PurchaseRequest.request_date >= from_date)

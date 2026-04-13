@@ -10,6 +10,113 @@ const simpleBillForm = document.getElementById('simpleBillForm');
 const simpleBillFlashBox = document.getElementById('simpleBillFlash');
 let editRequestId = null;
 
+// ---- Factory status-change notification system ----
+let factoryStatusMap = {};
+let factoryNotifInitialized = false;
+
+function initFactoryNotifications() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
+}
+
+function playNotifSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.25);
+    gain.gain.setValueAtTime(0.7, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.5);
+  } catch (e) {}
+}
+
+function showOverlayNotif(title, message, type) {
+  const iconMap = { success: '✓', danger: '✕', warning: '⏸', info: 'ℹ' };
+  const existing = document.querySelector('.factory-notif-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'factory-notif-overlay';
+  overlay.innerHTML = `
+    <div class="factory-notif-box factory-notif-box-${type}">
+      <div class="factory-notif-icon factory-notif-icon-${type}">${iconMap[type] || 'ℹ'}</div>
+      <div class="factory-notif-title">${title}</div>
+      <div class="factory-notif-msg">${message}</div>
+      <button class="factory-notif-ok" onclick="this.closest('.factory-notif-overlay').remove()">OK</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add('show'));
+
+  const autoDismiss = setTimeout(() => {
+    overlay.classList.remove('show');
+    setTimeout(() => overlay.remove(), 300);
+  }, 8000);
+
+  overlay.querySelector('.factory-notif-ok').addEventListener('click', () => {
+    clearTimeout(autoDismiss);
+  });
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) {
+      clearTimeout(autoDismiss);
+      overlay.remove();
+    }
+  });
+}
+
+function showStrongNotification(title, message, type) {
+  if (navigator.vibrate) {
+    navigator.vibrate([200, 100, 300, 100, 400]);
+  }
+  playNotifSound();
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try { new Notification(title, { body: message }); } catch (e) {}
+  }
+  showOverlayNotif(title, message, type);
+  showToast(`${title} — ${message}`, type);
+}
+
+function checkStatusChanges(items) {
+  if (!factoryNotifInitialized) {
+    items.forEach(item => { factoryStatusMap[item.id] = item.approval_status; });
+    factoryNotifInitialized = true;
+    return;
+  }
+  items.forEach(item => {
+    const prev = factoryStatusMap[item.id];
+    if (prev !== undefined && prev !== item.approval_status) {
+      let title, message, type;
+      if (item.approval_status === 'Approved') {
+        title = 'Request Approved!';
+        message = `"${item.item_name}" has been APPROVED.`;
+        type = 'success';
+      } else if (item.approval_status === 'Rejected') {
+        const reason = item.approval_remark ? ` Reason: ${item.approval_remark}` : '';
+        title = 'Request Rejected';
+        message = `"${item.item_name}" was rejected.${reason}`;
+        type = 'danger';
+      } else if (item.approval_status === 'Hold') {
+        title = 'Request On Hold';
+        message = `"${item.item_name}" has been put on hold.`;
+        type = 'warning';
+      } else {
+        title = 'Request Updated';
+        message = `"${item.item_name}" status changed to ${item.approval_status}.`;
+        type = 'info';
+      }
+      showStrongNotification(title, message, type);
+    }
+    factoryStatusMap[item.id] = item.approval_status;
+  });
+}
+
 function showToast(message, type = 'success') {
   let container = document.getElementById('factoryToastContainer');
   if (!container) {
@@ -234,9 +341,10 @@ async function loadOwnRequests() {
 
   const res = await fetch(`/requests?${params.toString()}`);
   const data = await res.json();
+  checkStatusChanges(data.items);
   ownTableBody.innerHTML = '';
 
-  data.items.forEach(item => {
+  data.items.filter(item => item.approval_status !== 'Approved').forEach(item => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td data-label="ID">${item.id}</td>
@@ -296,5 +404,7 @@ async function editOwn(id) {
 }
 window.editOwn = editOwn;
 
+initFactoryNotifications();
 calcAmounts();
 loadOwnRequests();
+setInterval(loadOwnRequests, 10000);

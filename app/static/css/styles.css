@@ -145,6 +145,91 @@ body {
     background: #0b5ed7;
 }
 
+/* ---- Factory status-change overlay notification ---- */
+.factory-notif-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    background: rgba(0, 0, 0, 0.68);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+}
+
+.factory-notif-overlay.show {
+    opacity: 1;
+}
+
+.factory-notif-box {
+    background: #1a1a2e;
+    color: #fff;
+    border-radius: 20px;
+    padding: 2.2rem 2rem;
+    max-width: 360px;
+    width: 90%;
+    text-align: center;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
+    transform: scale(0.82);
+    transition: transform 0.25s ease;
+}
+
+.factory-notif-overlay.show .factory-notif-box {
+    transform: scale(1);
+}
+
+.factory-notif-icon {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1.1rem;
+    font-size: 2.2rem;
+    font-weight: 700;
+}
+
+.factory-notif-icon-success { background: #1f8a43; }
+.factory-notif-icon-danger  { background: #c92a2a; }
+.factory-notif-icon-warning { background: #e67700; }
+.factory-notif-icon-info    { background: #0b5ed7; }
+
+.factory-notif-box-success { border-top: 5px solid #1f8a43; }
+.factory-notif-box-danger  { border-top: 5px solid #c92a2a; }
+.factory-notif-box-warning { border-top: 5px solid #e67700; }
+.factory-notif-box-info    { border-top: 5px solid #0b5ed7; }
+
+.factory-notif-title {
+    font-size: 1.35rem;
+    font-weight: 700;
+    margin-bottom: 0.55rem;
+}
+
+.factory-notif-msg {
+    font-size: 0.97rem;
+    opacity: 0.88;
+    margin-bottom: 0.3rem;
+}
+
+.factory-notif-ok {
+    margin-top: 1.3rem;
+    background: rgba(255, 255, 255, 0.15);
+    border: 1.5px solid rgba(255, 255, 255, 0.4);
+    color: #fff;
+    border-radius: 8px;
+    padding: 0.45rem 2rem;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.factory-notif-ok:hover,
+.factory-notif-ok:active {
+    background: rgba(255, 255, 255, 0.28);
+}
+
 @media (max-width: 767px) {
     #wrapper {
         flex-direction: column;
