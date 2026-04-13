@@ -40,6 +40,17 @@ if (requestForm) {
 
 async function submitRequest(saveAsDraft) {
   const formData = new FormData(requestForm);
+
+  // Bill image is mandatory for final submissions (not drafts)
+  if (!saveAsDraft) {
+    const billFile = formData.get('bill_image');
+    if (!billFile || billFile.size === 0) {
+      showFlash('Upload Bill / Quotation Image is required before submitting.', 'danger');
+      document.querySelector('[name="bill_image"]')?.focus();
+      return;
+    }
+  }
+
   formData.set('save_as_draft', saveAsDraft ? 'true' : 'false');
   if (formData.get('urgent_flag') === 'true') {
     formData.set('urgent_flag', 'true');

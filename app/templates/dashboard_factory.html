@@ -23,7 +23,7 @@
                     <div class="col-12"><label class="form-label">Reason / Urgency</label><textarea name="reason" class="form-control" required></textarea></div>
                     <div class="col-md-6"><label class="form-label">Payment Needed Today?</label><select name="urgent_flag" class="form-select"><option value="false">No</option><option value="true">Yes</option></select></div>
                     <div class="col-md-6"><label class="form-label">Requested By</label><input name="requested_by" class="form-control" value="{{ user.name }}" required></div>
-                    <div class="col-12"><label class="form-label">Upload Bill / Quotation Image</label><input type="file" name="bill_image" class="form-control" accept="image/*" capture="environment"></div>
+                    <div class="col-12"><label class="form-label">Upload Bill / Quotation Image <span class="text-danger">*</span></label><input type="file" name="bill_image" class="form-control" accept="image/*"></div>
                     <div class="col-12"><label class="form-label">Notes</label><textarea name="notes" class="form-control"></textarea></div>
                 </div>
                 <div class="factory-actions mt-3">
