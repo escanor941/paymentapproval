@@ -8,12 +8,16 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: APP_ENV
+        value: production
       - key: DATABASE_URL
         sync: false
       - key: SESSION_SECRET
         generateValue: true
-      - key: AUTO_CREATE_SCHEMA
+      - key: SESSION_HTTPS_ONLY
         value: "true"
+      - key: AUTO_CREATE_SCHEMA
+        value: "false"
       - key: STORAGE_BACKEND
         value: "local"
       - key: UPLOAD_DIR

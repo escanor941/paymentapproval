@@ -19,3 +19,7 @@ dist/
 build/
 *.log
 node_modules/
+.gradle/
+local.properties
+*.jks
+*.keystore

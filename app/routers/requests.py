@@ -12,6 +12,12 @@ from app.utils.storage import save_upload
 
 router = APIRouter(tags=["requests"])
 
+
+def _compute_amounts(qty: float, rate: float, gst_percent: float) -> tuple[float, float]:
+    amount = qty * rate
+    final_amount = amount + (amount * gst_percent / 100)
+    return round(amount, 2), round(final_amount, 2)
+
 def _as_dict(req: PurchaseRequest) -> dict:
     return {
         "id": req.id,
@@ -75,6 +81,12 @@ def create_request(
 ):
     if user.role != "admin" and user.role != "factory":
         raise HTTPException(403, "Invalid role")
+    if qty <= 0 or rate <= 0:
+        raise HTTPException(400, "Quantity and rate must be greater than zero")
+    if gst_percent < 0:
+        raise HTTPException(400, "GST percent cannot be negative")
+
+    computed_amount, computed_final_amount = _compute_amounts(qty, rate, gst_percent)
 
     req = PurchaseRequest(
         request_date=request_date,
@@ -86,9 +98,9 @@ def create_request(
         qty=qty,
         unit=unit,
         rate=rate,
-        amount=amount,
+        amount=computed_amount,
         gst_percent=gst_percent,
-        final_amount=final_amount,
+        final_amount=computed_final_amount,
         reason=reason,
         urgent_flag=urgent_flag,
         requested_by=requested_by,
@@ -182,7 +194,13 @@ def update_request(
         if req.requested_by_user_id != user.id or req.approval_status not in ["Pending", "Draft", "Hold"]:
             raise HTTPException(403, "Edit not permitted")
 
+    if qty <= 0 or rate <= 0:
+        raise HTTPException(400, "Quantity and rate must be greater than zero")
+    if gst_percent < 0:
+        raise HTTPException(400, "GST percent cannot be negative")
+
     old = _as_dict(req)
+    computed_amount, computed_final_amount = _compute_amounts(qty, rate, gst_percent)
     req.request_date = request_date
     req.factory_id = factory_id
     req.vendor_id = vendor_id
@@ -192,9 +210,9 @@ def update_request(
     req.qty = qty
     req.unit = unit
     req.rate = rate
-    req.amount = amount
+    req.amount = computed_amount
     req.gst_percent = gst_percent
-    req.final_amount = final_amount
+    req.final_amount = computed_final_amount
     req.reason = reason
     req.urgent_flag = urgent_flag
     req.requested_by = requested_by
@@ -215,11 +233,15 @@ def update_request(
 def delete_request(
     request_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(admin_required),
+    user: User = Depends(get_current_user),
 ):
     req = db.get(PurchaseRequest, request_id)
     if not req or req.is_deleted:
         raise HTTPException(404, "Request not found")
+
+    if user.role != "admin":
+        if req.requested_by_user_id != user.id or req.approval_status not in ["Pending", "Draft", "Hold"]:
+            raise HTTPException(403, "Delete not permitted")
 
     req.is_deleted = True
     log_change(db, entity="purchase_request", entity_id=req.id, action="SOFT_DELETE", old_value=_as_dict(req), changed_by=user.id)
@@ -240,6 +262,9 @@ def approve_request(
     req = db.get(PurchaseRequest, request_id)
     if not req or req.is_deleted:
         raise HTTPException(404, "Request not found")
+
+    if approved_amount <= 0:
+        raise HTTPException(400, "Approved amount must be greater than zero")
 
     old = _as_dict(req)
     req.approval_status = "Approved"
@@ -317,11 +342,16 @@ def mark_paid(
         raise HTTPException(404, "Request not found")
     if req.approval_status != "Approved":
         raise HTTPException(400, "Cannot mark paid unless approved")
+    if paid_amount <= 0:
+        raise HTTPException(400, "Paid amount must be greater than zero")
 
     approved_amount = req.approved_amount or req.final_amount
     total_paid = db.scalar(
         select(func.coalesce(func.sum(Payment.paid_amount), 0)).where(Payment.request_id == request_id)
     )
+    if paid_amount > max(approved_amount - total_paid, 0):
+        raise HTTPException(400, "Paid amount exceeds remaining balance")
+
     new_total_paid = total_paid + paid_amount
     balance = max(approved_amount - new_total_paid, 0)
 
@@ -339,7 +369,7 @@ def mark_paid(
 
     if balance == 0:
         req.payment_status = "Paid"
-    elif partial_payment and new_total_paid > 0:
+    elif new_total_paid > 0:
         req.payment_status = "Partially Paid"
     else:
         req.payment_status = "Unpaid"

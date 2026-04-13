@@ -11,8 +11,8 @@ DEFAULT_CATEGORIES = ["Raw Material", "Consumable", "Maintenance", "Packaging", 
 
 
 def seed_defaults(db: Session) -> None:
-    admin_exists = db.scalar(select(User).where(User.username == "admin"))
-    if not admin_exists:
+    admin_user = db.scalar(select(User).where(User.username == "admin"))
+    if not admin_user:
         db.add(
             User(
                 name="System Admin",
@@ -21,9 +21,11 @@ def seed_defaults(db: Session) -> None:
                 role="admin",
             )
         )
+    elif not admin_user.is_active:
+        admin_user.is_active = True
 
-    factory_user_exists = db.scalar(select(User).where(User.username == "factory1"))
-    if not factory_user_exists:
+    factory_user = db.scalar(select(User).where(User.username == "factory1"))
+    if not factory_user:
         db.add(
             User(
                 name="Factory User",
@@ -32,6 +34,8 @@ def seed_defaults(db: Session) -> None:
                 role="factory",
             )
         )
+    elif not factory_user.is_active:
+        factory_user.is_active = True
 
     factory_exists = db.scalar(select(Factory).limit(1))
     if not factory_exists:
