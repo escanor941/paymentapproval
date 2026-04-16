@@ -2,6 +2,45 @@ const reqBody = document.querySelector('#reqTable tbody');
 const simpleBillBody = document.querySelector('#billUploadTable tbody');
 let prevUnread = 0;
 let requestFilterActive = false;
+const ADMIN_REQ_CACHE_KEY = 'admin_requests_cache_v1';
+const ADMIN_FILTER_CACHE_KEY = 'admin_request_filters_v1';
+
+function getFilterValues() {
+  return {
+    fFrom: document.getElementById('fFrom')?.value || '',
+    fTo: document.getElementById('fTo')?.value || '',
+    fFactory: document.getElementById('fFactory')?.value || '',
+    fVendor: document.getElementById('fVendor')?.value || '',
+    fStatus: document.getElementById('fStatus')?.value || '',
+    fPayment: document.getElementById('fPayment')?.value || '',
+  };
+}
+
+function applySavedFilters() {
+  try {
+    const raw = localStorage.getItem(ADMIN_FILTER_CACHE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    ['fFrom', 'fTo', 'fFactory', 'fVendor', 'fStatus', 'fPayment'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el && typeof saved[id] === 'string') el.value = saved[id];
+    });
+    requestFilterActive = Boolean(saved.requestFilterActive);
+  } catch {
+    // Ignore corrupt browser cache and continue with defaults.
+  }
+}
+
+function saveFilterState() {
+  try {
+    localStorage.setItem(
+      ADMIN_FILTER_CACHE_KEY,
+      JSON.stringify({ requestFilterActive, ...getFilterValues() })
+    );
+  } catch {
+    // Ignore browser storage errors.
+  }
+}
 
 function factoryNameFromId(id) {
   const sel = document.getElementById('fFactory');
@@ -10,37 +49,23 @@ function factoryNameFromId(id) {
   return opt?.textContent || String(id ?? '');
 }
 
-function b(status) {
-  if (status === 'Pending') return '<span class="badge badge-pending">Pending</span>';
-  if (status === 'Approved') return '<span class="badge badge-approved">Approved</span>';
-  if (status === 'Rejected') return '<span class="badge badge-rejected">Rejected</span>';
-  if (status === 'Paid') return '<span class="badge badge-paid">Paid</span>';
-  return `<span class="badge text-bg-secondary">${status}</span>`;
+function cacheRequests(items) {
+  try {
+    localStorage.setItem(
+      ADMIN_REQ_CACHE_KEY,
+      JSON.stringify({
+        savedAt: new Date().toISOString(),
+        items,
+      })
+    );
+  } catch {
+    // Ignore browser storage errors.
+  }
 }
 
-async function loadRequests() {
-  if (!reqBody) return;
-  const params = new URLSearchParams();
-  if (requestFilterActive) {
-    const map = [
-      ['from_date', 'fFrom'],
-      ['to_date', 'fTo'],
-      ['factory_id', 'fFactory'],
-      ['vendor', 'fVendor'],
-      ['status', 'fStatus'],
-      ['payment_status', 'fPayment'],
-    ];
-    map.forEach(([k, id]) => {
-      const val = document.getElementById(id)?.value;
-      if (val) params.set(k, val);
-    });
-  }
-
-  const res = await fetch(`/requests?${params.toString()}`);
-  const data = await res.json();
+function renderRequests(items) {
   reqBody.innerHTML = '';
-
-  data.items.forEach(it => {
+  (items || []).forEach(it => {
     const tr = document.createElement('tr');
     if (it.is_unread_admin) tr.classList.add('new-row');
     tr.innerHTML = `
@@ -69,10 +94,58 @@ async function loadRequests() {
     reqBody.appendChild(tr);
   });
 }
+
+function restoreRequestsFromCache() {
+  if (!reqBody) return;
+  try {
+    const raw = localStorage.getItem(ADMIN_REQ_CACHE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (Array.isArray(saved.items) && saved.items.length) {
+      renderRequests(saved.items);
+    }
+  } catch {
+    // Ignore corrupt browser cache and continue with live data fetch.
+  }
+}
+
+function b(status) {
+  if (status === 'Pending') return '<span class="badge badge-pending">Pending</span>';
+  if (status === 'Approved') return '<span class="badge badge-approved">Approved</span>';
+  if (status === 'Rejected') return '<span class="badge badge-rejected">Rejected</span>';
+  if (status === 'Paid') return '<span class="badge badge-paid">Paid</span>';
+  return `<span class="badge text-bg-secondary">${status}</span>`;
+}
+
+async function loadRequests() {
+  if (!reqBody) return;
+  const params = new URLSearchParams();
+  if (requestFilterActive) {
+    const map = [
+      ['from_date', 'fFrom'],
+      ['to_date', 'fTo'],
+      ['factory_id', 'fFactory'],
+      ['vendor', 'fVendor'],
+      ['status', 'fStatus'],
+      ['payment_status', 'fPayment'],
+    ];
+    map.forEach(([k, id]) => {
+      const val = document.getElementById(id)?.value;
+      if (val) params.set(k, val);
+    });
+  }
+
+  saveFilterState();
+  const res = await fetch(`/requests?${params.toString()}`);
+  const data = await res.json();
+  renderRequests(data.items || []);
+  cacheRequests(data.items || []);
+}
 window.loadRequests = loadRequests;
 
 function applyRequestFilters() {
   requestFilterActive = true;
+  saveFilterState();
   loadRequests();
 }
 window.applyRequestFilters = applyRequestFilters;
@@ -104,6 +177,7 @@ function clearFilters() {
     if (el) el.value = '';
   });
   requestFilterActive = false;
+  saveFilterState();
   loadRequests();
 }
 window.clearFilters = clearFilters;
@@ -264,6 +338,15 @@ notifBtn?.addEventListener('click', async () => {
 });
 
 setInterval(pollNotifications, 8000);
+setInterval(() => {
+  if (!document.hidden) {
+    loadRequests();
+    loadSimpleBills();
+  }
+}, 12000);
+
+applySavedFilters();
+restoreRequestsFromCache();
 pollNotifications();
 loadRequests();
 loadSimpleBills();
