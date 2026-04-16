@@ -8,7 +8,9 @@ from app.database import get_db
 from app.deps import admin_required, get_current_user
 from app.models import Factory, Payment, PurchaseRequest, User, Vendor
 from app.utils.audit import log_change
+from app.utils.email_notify import notify_bill_upload, notify_new_request
 from app.utils.storage import save_upload
+from app.utils.telegram_notify import telegram_bill_upload, telegram_new_request
 
 router = APIRouter(tags=["requests"])
 
@@ -55,6 +57,43 @@ def _as_dict(req: PurchaseRequest) -> dict:
 
 def _save_file(upload: UploadFile | None) -> str | None:
     return save_upload(upload)
+
+
+def _notify_request_submission(
+    db: Session,
+    req: PurchaseRequest,
+    factory_id: int,
+    vendor_id: int,
+    vendor_mobile: str | None,
+    item_name: str,
+    requested_by: str,
+    urgent_flag: bool,
+) -> bool:
+    factory_obj = db.get(Factory, factory_id)
+    factory_name = factory_obj.name if factory_obj else str(factory_id)
+    vendor_display = (vendor_mobile or "").strip()
+    if not vendor_display:
+        vendor_obj = db.get(Vendor, vendor_id)
+        vendor_display = vendor_obj.name if vendor_obj else str(vendor_id)
+
+    notify_new_request(
+        req_id=req.id,
+        factory_name=factory_name,
+        item_name=item_name,
+        vendor=vendor_display,
+        final_amount=req.final_amount,
+        requested_by=requested_by,
+        urgent=urgent_flag,
+    )
+    return telegram_new_request(
+        req_id=req.id,
+        factory_name=factory_name,
+        item_name=item_name,
+        vendor=vendor_display,
+        final_amount=req.final_amount,
+        requested_by=requested_by,
+        urgent=urgent_flag,
+    )
 
 
 @router.post("/requests")
@@ -116,7 +155,24 @@ def create_request(
     db.flush()
     log_change(db, entity="purchase_request", entity_id=req.id, action="CREATE", new_value=_as_dict(req), changed_by=user.id)
     db.commit()
-    return {"message": "Request saved", "id": req.id}
+
+    telegram_sent = True
+    if req.approval_status != "Draft":
+        telegram_sent = _notify_request_submission(
+            db=db,
+            req=req,
+            factory_id=factory_id,
+            vendor_id=vendor_id,
+            vendor_mobile=vendor_mobile,
+            item_name=item_name,
+            requested_by=requested_by,
+            urgent_flag=urgent_flag,
+        )
+
+    message = "Request saved"
+    if req.approval_status != "Draft" and not telegram_sent:
+        message = "Request saved, but Telegram notification failed"
+    return {"message": message, "id": req.id}
 
 
 @router.post("/requests/simple-bill")
@@ -182,7 +238,20 @@ def create_simple_bill_upload(
         changed_by=user.id,
     )
     db.commit()
-    return {"message": "Bill uploaded", "id": req.id}
+
+    notify_bill_upload(
+        req_id=req.id,
+        vendor_name=clean_vendor_name,
+        uploaded_by=user.name,
+    )
+    telegram_sent = telegram_bill_upload(
+        req_id=req.id,
+        vendor_name=clean_vendor_name,
+        uploaded_by=user.name,
+    )
+
+    message = "Bill uploaded" if telegram_sent else "Bill uploaded, but Telegram notification failed"
+    return {"message": message, "id": req.id}
 
 
 @router.get("/requests")
@@ -249,6 +318,7 @@ def update_request(
     urgent_flag: bool = Form(False),
     requested_by: str = Form(...),
     notes: str | None = Form(None),
+    save_as_draft: bool = Form(False),
     bill_image: UploadFile | None = File(None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -267,6 +337,7 @@ def update_request(
         raise HTTPException(400, "GST percent cannot be negative")
 
     old = _as_dict(req)
+    old_status = req.approval_status
     computed_amount, computed_final_amount = _compute_amounts(qty, rate, gst_percent)
     req.request_date = request_date
     req.factory_id = factory_id
@@ -289,11 +360,29 @@ def update_request(
         req.bill_image_path = _save_file(bill_image)
 
     if user.role == "factory":
-        req.is_unread_admin = True
+        req.approval_status = "Draft" if save_as_draft else "Pending"
+        req.is_unread_admin = not save_as_draft
 
     log_change(db, entity="purchase_request", entity_id=req.id, action="UPDATE", old_value=old, new_value=_as_dict(req), changed_by=user.id)
     db.commit()
-    return {"message": "Updated"}
+
+    telegram_sent = True
+    if user.role == "factory" and req.approval_status == "Pending" and old_status != "Pending":
+        telegram_sent = _notify_request_submission(
+            db=db,
+            req=req,
+            factory_id=factory_id,
+            vendor_id=vendor_id,
+            vendor_mobile=vendor_mobile,
+            item_name=item_name,
+            requested_by=requested_by,
+            urgent_flag=urgent_flag,
+        )
+
+    message = "Updated"
+    if user.role == "factory" and req.approval_status == "Pending" and old_status != "Pending" and not telegram_sent:
+        message = "Updated, but Telegram notification failed"
+    return {"message": message}
 
 
 @router.delete("/requests/{request_id}")
