@@ -13,6 +13,7 @@
     </div>
     <div class="d-flex flex-wrap gap-2 mt-3">
         <button class="btn btn-primary" onclick="loadAllReport()">Run</button>
+        <button class="btn btn-outline-secondary" onclick="clearReportFilters()">Reset</button>
         <button class="btn btn-outline-success" onclick="exportReport('excel')">Export Excel</button>
         <button class="btn btn-outline-danger" onclick="exportReport('pdf')">Export PDF</button>
         <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
@@ -28,8 +29,21 @@
         <button class="btn btn-outline-info" onclick="quickReport('cash-vs-bank')">Cash vs Bank</button>
     </div>
 </div>
+<div class="row g-3 mb-3" id="reportSummaryRow">
+    <div class="col-6 col-md-3"><div class="card card-stat p-2"><small>Report Count</small><h5 id="reportCount">0</h5></div></div>
+    <div class="col-6 col-md-3"><div class="card card-stat p-2"><small>Total Amount</small><h5 id="reportTotal">0.00</h5></div></div>
+    <div class="col-6 col-md-3"><div class="card card-stat p-2"><small>From</small><h5 id="reportFrom" class="h6 mb-0">-</h5></div></div>
+    <div class="col-6 col-md-3"><div class="card card-stat p-2"><small>To</small><h5 id="reportTo" class="h6 mb-0">-</h5></div></div>
+</div>
 <div class="card p-3">
-    <pre id="reportOutput" class="mb-0 small"></pre>
+    <div class="table-responsive">
+        <table class="table table-sm align-middle" id="reportTable">
+            <thead id="reportHead"></thead>
+            <tbody id="reportBody"></tbody>
+        </table>
+    </div>
+    <div id="reportEmpty" class="text-muted small d-none">No report data found.</div>
+    <pre id="reportOutput" class="mb-0 small d-none"></pre>
 </div>
 {% endblock %}
 {% block scripts %}

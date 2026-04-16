@@ -1,6 +1,14 @@
 const reqBody = document.querySelector('#reqTable tbody');
 const simpleBillBody = document.querySelector('#billUploadTable tbody');
 let prevUnread = 0;
+let requestFilterActive = false;
+
+function factoryNameFromId(id) {
+  const sel = document.getElementById('fFactory');
+  if (!sel) return String(id ?? '');
+  const opt = Array.from(sel.options).find((x) => x.value === String(id));
+  return opt?.textContent || String(id ?? '');
+}
 
 function b(status) {
   if (status === 'Pending') return '<span class="badge badge-pending">Pending</span>';
@@ -13,18 +21,20 @@ function b(status) {
 async function loadRequests() {
   if (!reqBody) return;
   const params = new URLSearchParams();
-  const map = [
-    ['from_date', 'fFrom'],
-    ['to_date', 'fTo'],
-    ['factory_id', 'fFactory'],
-    ['vendor', 'fVendor'],
-    ['status', 'fStatus'],
-    ['payment_status', 'fPayment'],
-  ];
-  map.forEach(([k, id]) => {
-    const val = document.getElementById(id)?.value;
-    if (val) params.set(k, val);
-  });
+  if (requestFilterActive) {
+    const map = [
+      ['from_date', 'fFrom'],
+      ['to_date', 'fTo'],
+      ['factory_id', 'fFactory'],
+      ['vendor', 'fVendor'],
+      ['status', 'fStatus'],
+      ['payment_status', 'fPayment'],
+    ];
+    map.forEach(([k, id]) => {
+      const val = document.getElementById(id)?.value;
+      if (val) params.set(k, val);
+    });
+  }
 
   const res = await fetch(`/requests?${params.toString()}`);
   const data = await res.json();
@@ -36,7 +46,7 @@ async function loadRequests() {
     tr.innerHTML = `
       <td>${it.id}</td>
       <td>${it.request_date}</td>
-      <td>${it.factory_id}</td>
+      <td>${factoryNameFromId(it.factory_id)}</td>
       <td>${it.vendor || ''}</td>
       <td>${it.item_name}</td>
       <td>${it.qty} ${it.unit}</td>
@@ -60,6 +70,12 @@ async function loadRequests() {
   });
 }
 window.loadRequests = loadRequests;
+
+function applyRequestFilters() {
+  requestFilterActive = true;
+  loadRequests();
+}
+window.applyRequestFilters = applyRequestFilters;
 
 async function loadSimpleBills() {
   if (!simpleBillBody) return;
@@ -87,6 +103,7 @@ function clearFilters() {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
+  requestFilterActive = false;
   loadRequests();
 }
 window.clearFilters = clearFilters;
