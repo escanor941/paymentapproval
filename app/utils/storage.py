@@ -58,9 +58,17 @@ def save_upload(upload: UploadFile | None) -> str | None:
     filename = f"{uuid4().hex}{ext}"
     content = upload.file.read()
 
-    if os.getenv("STORAGE_BACKEND", "local").lower() in {"s3", "r2"}:
+    backend = os.getenv("STORAGE_BACKEND", "local").lower()
+    
+    if backend in {"s3", "r2"}:
         return _upload_to_s3(filename, content, upload.content_type)
-
+    
+    # In production, STORAGE_BACKEND must be r2; no local storage allowed
+    app_env = os.getenv("APP_ENV", "development").lower()
+    if app_env in {"production", "prod"}:
+        raise RuntimeError("STORAGE_BACKEND must be 'r2' in production. Local storage is disabled.")
+    
+    # Local storage only allowed in development
     upload_dir = _upload_dir()
     file_path = upload_dir / filename
     file_path.write_bytes(content)

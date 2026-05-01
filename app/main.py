@@ -17,6 +17,14 @@ app = FastAPI(title="Factory Purchase Approval System", version="1.0.0")
 app_env = os.getenv("APP_ENV", "development").lower()
 is_production = app_env in {"production", "prod"}
 
+# ── Storage validation ──
+storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
+if is_production and storage_backend not in {"s3", "r2"}:
+    raise RuntimeError(
+        f"Production requires STORAGE_BACKEND='r2' but got '{storage_backend}'. "
+        "Local storage is only for development."
+    )
+
 session_https_only = os.getenv("SESSION_HTTPS_ONLY", "true" if is_production else "false").lower() == "true"
 session_secret = os.getenv("SESSION_SECRET", "change-this-secret-key")
 if is_production and session_secret == "change-this-secret-key":
@@ -33,10 +41,10 @@ app.add_middleware(
 )
 
 static_dir = Path("app/static")
-storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
 
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
-if storage_backend == "local":
+# Only mount /uploads in development; production uses R2
+if storage_backend == "local" and not is_production:
     upload_dir = Path(os.getenv("UPLOAD_DIR", "uploads"))
     upload_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/uploads", StaticFiles(directory=upload_dir), name="uploads")

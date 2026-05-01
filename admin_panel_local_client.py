@@ -22,6 +22,11 @@ except Exception:  # pragma: no cover - optional import safety
     Image = None
     ImageTk = None
 
+try:
+    import fitz  # PyMuPDF
+except Exception:  # pragma: no cover - optional import safety
+    fitz = None
+
 APP_NAME = "EMDAdminPanel"
 DEFAULT_BASE_URL = "https://paymentapproval.onrender.com"
 
@@ -951,10 +956,31 @@ class AdminLocalClient:
         lower_name = filename.lower()
         ctype = (content_type or "").lower()
 
+        # ── PDF Preview ──
         if lower_name.endswith(".pdf") or "application/pdf" in ctype:
-            self._show_preview_message("PDF preview is not supported inside the app. Use Download Bill to open it.")
-            return
+            if fitz is None:
+                self._show_preview_message("PDF preview unavailable (PyMuPDF not installed). Use Download Bill to open it.")
+                return
+            try:
+                pdf_doc = fitz.open(stream=content, filetype="pdf")
+                if pdf_doc.page_count == 0:
+                    self._show_preview_message("PDF is empty.")
+                    return
+                # Render first page to image
+                page = pdf_doc[0]
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for clarity
+                img_data = pix.tobytes("ppm")
+                img = Image.open(io.BytesIO(img_data))
+                self._preview_pil_image = img
+                self._redraw_preview_image()
+                self.preview_status.set(f"PDF preview (page 1 of {pdf_doc.page_count}) — {filename}")
+                pdf_doc.close()
+                return
+            except Exception as exc:
+                self._show_preview_message(f"Failed to render PDF: {exc}")
+                return
 
+        # ── Image Preview ──
         if Image is None or ImageTk is None:
             self._show_preview_message("Image preview needs Pillow. Use Download Bill if preview is unavailable.")
             return
