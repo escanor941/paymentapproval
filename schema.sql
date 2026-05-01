@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS purchase_requests (
     urgent_flag BOOLEAN DEFAULT 0,
     requested_by TEXT NOT NULL,
     requested_by_user_id INTEGER NOT NULL,
+    geo_latitude REAL,
+    geo_longitude REAL,
+    geo_accuracy_m REAL,
+    geo_captured_at DATETIME,
+    is_in_factory BOOLEAN,
+    distance_from_factory_m REAL,
     bill_image_path TEXT,
     notes TEXT,
     approval_status TEXT DEFAULT 'Pending',
@@ -78,6 +84,20 @@ CREATE TABLE IF NOT EXISTS purchase_requests (
     FOREIGN KEY(vendor_id) REFERENCES vendors(id),
     FOREIGN KEY(requested_by_user_id) REFERENCES users(id),
     FOREIGN KEY(approved_by) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS user_presence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL UNIQUE,
+    factory_id INTEGER,
+    latitude REAL NOT NULL,
+    longitude REAL NOT NULL,
+    accuracy_m REAL,
+    is_in_factory BOOLEAN,
+    distance_from_factory_m REAL,
+    last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(factory_id) REFERENCES factories(id)
 );
 
 CREATE TABLE IF NOT EXISTS payments (

@@ -11,6 +11,13 @@
     </div>
     <small class="text-muted mt-2 d-block">For Users: Extra1=Username, Extra2=Role(admin/factory), Extra3=Password.</small>
     <small class="text-muted d-block">For Factories: Extra1=Location. For Vendors: Extra1=Mobile, Extra2=Address, Extra3=GST.</small>
+    <div id="factoryLocationHelper" class="mt-2 d-none">
+        <small class="text-muted d-block mb-1">Factory Location format: latitude,longitude,radiusMeters (example: 12.9716,77.5946,250)</small>
+        <div class="d-flex flex-wrap gap-2">
+            <button class="btn btn-sm btn-outline-primary" type="button" onclick="fillFactoryLocationFromGps()">Use Current GPS</button>
+            <button class="btn btn-sm btn-outline-secondary" type="button" onclick="openFactoryLocationMap()">Open In Map</button>
+        </div>
+    </div>
     <div class="d-flex gap-2 mt-2">
         <button class="btn btn-primary" onclick="createMaster()">Add</button>
         <button class="btn btn-outline-secondary" onclick="loadMaster()">Refresh</button>

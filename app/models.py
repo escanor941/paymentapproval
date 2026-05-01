@@ -91,6 +91,12 @@ class PurchaseRequest(Base):
     urgent_flag: Mapped[bool] = mapped_column(Boolean, default=False)
     requested_by: Mapped[str] = mapped_column(String(120), nullable=False)
     requested_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    geo_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    geo_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    geo_accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    geo_captured_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_in_factory: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    distance_from_factory_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     bill_image_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -131,6 +137,23 @@ class Payment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     request = relationship("PurchaseRequest", back_populates="payments")
+
+
+class UserPresence(Base):
+    __tablename__ = "user_presence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    factory_id: Mapped[int | None] = mapped_column(ForeignKey("factories.id"), nullable=True)
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_in_factory: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    distance_from_factory_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User")
+    factory = relationship("Factory")
 
 
 class AuditLog(Base):

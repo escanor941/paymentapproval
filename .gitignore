@@ -21,5 +21,6 @@ build/
 node_modules/
 .gradle/
 local.properties
+android-factory-app/keystore.properties
 *.jks
 *.keystore

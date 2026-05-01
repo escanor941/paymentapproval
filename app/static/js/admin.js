@@ -1,5 +1,6 @@
 const reqBody = document.querySelector('#reqTable tbody');
 const simpleBillBody = document.querySelector('#billUploadTable tbody');
+const presenceBody = document.querySelector('#presenceTable tbody');
 let prevUnread = 0;
 let requestFilterActive = false;
 const ADMIN_REQ_CACHE_KEY = 'admin_requests_cache_v1';
@@ -77,6 +78,7 @@ function renderRequests(items) {
       <td>${it.qty} ${it.unit}</td>
       <td>${Number(it.final_amount).toFixed(2)}</td>
       <td>${it.requested_by}</td>
+      <td>${renderRequestLocation(it)}</td>
       <td>${b(it.approval_status)}</td>
       <td>${b(it.payment_status)}</td>
       <td class="d-flex flex-wrap gap-1">
@@ -94,6 +96,54 @@ function renderRequests(items) {
     reqBody.appendChild(tr);
   });
 }
+
+function renderRequestLocation(item) {
+  if (item.is_in_factory === true) {
+    return '<span class="badge text-bg-success">In Factory</span>';
+  }
+  if (item.is_in_factory === false) {
+    const dist = item.distance_from_factory_m != null ? `${Math.round(item.distance_from_factory_m)}m` : '';
+    return `<span class="badge text-bg-danger">Outside</span> ${dist}`.trim();
+  }
+  if (item.geo_latitude != null && item.geo_longitude != null) {
+    return '<span class="badge text-bg-secondary">GPS Captured</span>';
+  }
+  return '<span class="text-muted">No GPS</span>';
+}
+
+function presenceBadge(status) {
+  if (status === 'In Factory') return '<span class="badge text-bg-success">In Factory</span>';
+  if (status === 'Outside') return '<span class="badge text-bg-danger">Outside</span>';
+  if (status === 'Offline') return '<span class="badge text-bg-secondary">Offline</span>';
+  return '<span class="badge text-bg-warning">Unknown</span>';
+}
+
+async function loadPresenceUsers() {
+  if (!presenceBody) return;
+  const res = await fetch('/presence/users');
+  if (!res.ok) return;
+  const data = await res.json();
+  presenceBody.innerHTML = '';
+  (data.items || []).forEach((it) => {
+    const tr = document.createElement('tr');
+    const distance = it.distance_from_factory_m != null ? `${Math.round(it.distance_from_factory_m)} m` : '-';
+    const accuracy = it.accuracy_m != null ? `${Math.round(it.accuracy_m)} m` : '-';
+    const maps = (it.latitude != null && it.longitude != null)
+      ? `<a target="_blank" class="btn btn-sm btn-outline-secondary" href="https://maps.google.com/?q=${it.latitude},${it.longitude}">Map</a>`
+      : '<span class="text-muted">-</span>';
+    tr.innerHTML = `
+      <td>${it.user_name} <small class="text-muted">(${it.username})</small></td>
+      <td>${it.factory || '-'}</td>
+      <td>${presenceBadge(it.status)}</td>
+      <td>${distance}</td>
+      <td>${accuracy}</td>
+      <td>${it.last_seen_at || '-'}</td>
+      <td>${maps}</td>
+    `;
+    presenceBody.appendChild(tr);
+  });
+}
+window.loadPresenceUsers = loadPresenceUsers;
 
 function restoreRequestsFromCache() {
   if (!reqBody) return;
@@ -342,6 +392,7 @@ setInterval(() => {
   if (!document.hidden) {
     loadRequests();
     loadSimpleBills();
+    loadPresenceUsers();
   }
 }, 12000);
 
@@ -350,3 +401,4 @@ restoreRequestsFromCache();
 pollNotifications();
 loadRequests();
 loadSimpleBills();
+loadPresenceUsers();

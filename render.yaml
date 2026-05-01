@@ -19,12 +19,26 @@ services:
       - key: AUTO_CREATE_SCHEMA
         value: "false"
       - key: STORAGE_BACKEND
-        value: "local"
+        value: "r2"
       - key: UPLOAD_DIR
-        value: "/var/data/uploads"
+        value: "uploads"
+      - key: R2_ENDPOINT_URL
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_REGION
+        value: "auto"
+      - key: R2_ACCESS_KEY
+        sync: false
+      - key: R2_SECRET_KEY
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: TELEGRAM_CHAT_IDS
         sync: false
 
 # Optional persistent disk setup (recommended for local file uploads):

@@ -9,6 +9,7 @@ const flashBox = document.getElementById('factoryFlash');
 const simpleBillForm = document.getElementById('simpleBillForm');
 const simpleBillFlashBox = document.getElementById('simpleBillFlash');
 let editRequestId = null;
+let geoWarned = false;
 
 // ---- Factory status-change notification system ----
 let factoryStatusMap = {};
@@ -157,6 +158,66 @@ function showSimpleFlash(message, type = 'success') {
   }, 3000);
 }
 
+function getSelectedFactoryId() {
+  return requestForm?.querySelector('[name="factory_id"]')?.value || '';
+}
+
+function getCurrentLocation(timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) {
+      resolve(null);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        resolve({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+        });
+      },
+      () => resolve(null),
+      {
+        enableHighAccuracy: true,
+        timeout: timeoutMs,
+        maximumAge: 30 * 1000,
+      }
+    );
+  });
+}
+
+async function attachLocationToFormData(formData) {
+  const loc = await getCurrentLocation();
+  if (!loc) {
+    if (!geoWarned) {
+      showToast('Location unavailable. Request will be submitted without GPS.', 'warning');
+      geoWarned = true;
+    }
+    return;
+  }
+  formData.set('geo_latitude', String(loc.latitude));
+  formData.set('geo_longitude', String(loc.longitude));
+  formData.set('geo_accuracy_m', String(loc.accuracy || 0));
+}
+
+async function sendPresencePing() {
+  const loc = await getCurrentLocation(7000);
+  if (!loc) return;
+
+  const fd = new FormData();
+  fd.set('latitude', String(loc.latitude));
+  fd.set('longitude', String(loc.longitude));
+  fd.set('accuracy_m', String(loc.accuracy || 0));
+  const fid = getSelectedFactoryId();
+  if (fid) fd.set('factory_id', fid);
+
+  try {
+    await fetch('/presence/ping', { method: 'POST', body: fd });
+  } catch (_) {
+    // Ignore transient network/location issues.
+  }
+}
+
 function calcAmounts() {
   const qty = parseFloat(qtyInput?.value || 0);
   const rate = parseFloat(rateInput?.value || 0);
@@ -211,6 +272,7 @@ async function submitRequest(saveAsDraft) {
   } else {
     formData.set('urgent_flag', 'false');
   }
+  await attachLocationToFormData(formData);
 
   const url = editRequestId ? `/requests/${editRequestId}` : '/requests';
   const method = editRequestId ? 'PUT' : 'POST';
@@ -277,6 +339,8 @@ async function submitSimpleBill() {
   const startTime = performance.now();
   const billFile = fd.get('bill_image');
   const vendorName = (fd.get('vendor_name') || '').toString().trim();
+  const fid = getSelectedFactoryId();
+  if (fid) fd.set('factory_id', fid);
   if (!vendorName) {
     showSimpleFlash('Vendor name is required.', 'danger');
     return;
@@ -285,6 +349,8 @@ async function submitSimpleBill() {
     showSimpleFlash('Actual bill image is required.', 'danger');
     return;
   }
+
+  await attachLocationToFormData(fd);
 
   if (submitBtn) {
     submitBtn.disabled = true;
@@ -407,4 +473,8 @@ window.editOwn = editOwn;
 initFactoryNotifications();
 calcAmounts();
 loadOwnRequests();
+sendPresencePing();
+setInterval(() => {
+  if (!document.hidden) sendPresencePing();
+}, 60000);
 setInterval(loadOwnRequests, 10000);

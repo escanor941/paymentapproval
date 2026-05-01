@@ -54,9 +54,12 @@ Use these on Render (or in local .env file):
 - SESSION_HTTPS_ONLY: true in production
 - DATABASE_URL: Render PostgreSQL connection string
 - AUTO_CREATE_SCHEMA: true/false (default true)
-- STORAGE_BACKEND: local or s3
-- UPLOAD_DIR: local upload path (default uploads)
+- STORAGE_BACKEND: local, s3, or r2
+- UPLOAD_DIR: local upload path (default uploads; ignored when STORAGE_BACKEND is s3/r2)
 - RENDER_DISK_MOUNT_PATH: set automatically when using Render persistent disk
+- TELEGRAM_BOT_TOKEN: BotFather token for Telegram notifications
+- TELEGRAM_CHAT_ID: single chat id (legacy option)
+- TELEGRAM_CHAT_IDS: comma-separated chat ids for multiple recipients
 
 ### Optional S3-Compatible Variables (when STORAGE_BACKEND=s3)
 - S3_ENDPOINT_URL
@@ -65,6 +68,16 @@ Use these on Render (or in local .env file):
 - S3_ACCESS_KEY
 - S3_SECRET_KEY
 - S3_PUBLIC_BASE_URL
+
+### Optional Cloudflare R2 Variables (when STORAGE_BACKEND=r2)
+- R2_ENDPOINT_URL
+- R2_BUCKET
+- R2_REGION (use auto)
+- R2_ACCESS_KEY
+- R2_SECRET_KEY
+- R2_PUBLIC_BASE_URL
+
+R2 is S3-compatible, so you can also use the S3_* variable names if you prefer.
 
 ## Local Run
 1. Create and activate virtual environment.
@@ -98,7 +111,7 @@ bash start.sh
    - SESSION_SECRET = strong random value
    - SESSION_HTTPS_ONLY = true
    - AUTO_CREATE_SCHEMA = true
-   - STORAGE_BACKEND = local or s3
+  - STORAGE_BACKEND = local, s3, or r2
 7. Optional but recommended for local uploads on Render:
    - Add persistent disk mounted at /var/data
    - Set UPLOAD_DIR=/var/data/uploads

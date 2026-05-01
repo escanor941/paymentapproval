@@ -1,4 +1,5 @@
-from datetime import date, datetime
+import math
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import and_, desc, func, or_, select
@@ -6,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.deps import admin_required, get_current_user
-from app.models import Factory, Payment, PurchaseRequest, User, Vendor
+from app.models import Factory, Payment, PurchaseRequest, User, UserPresence, Vendor
 from app.utils.audit import log_change
 from app.utils.email_notify import notify_bill_upload, notify_new_request
 from app.utils.storage import save_upload
@@ -39,6 +40,12 @@ def _as_dict(req: PurchaseRequest) -> dict:
         "reason": req.reason,
         "urgent_flag": req.urgent_flag,
         "requested_by": req.requested_by,
+        "geo_latitude": req.geo_latitude,
+        "geo_longitude": req.geo_longitude,
+        "geo_accuracy_m": req.geo_accuracy_m,
+        "geo_captured_at": str(req.geo_captured_at) if req.geo_captured_at else None,
+        "is_in_factory": req.is_in_factory,
+        "distance_from_factory_m": req.distance_from_factory_m,
         "bill_image_path": req.bill_image_path,
         "notes": req.notes,
         "approval_status": req.approval_status,
@@ -57,6 +64,81 @@ def _as_dict(req: PurchaseRequest) -> dict:
 
 def _save_file(upload: UploadFile | None) -> str | None:
     return save_upload(upload)
+
+
+def _parse_factory_geo(location_text: str | None) -> tuple[float, float, float] | None:
+    if not location_text:
+        return None
+    parts = [x.strip() for x in location_text.split(",") if x.strip()]
+    if len(parts) < 2:
+        return None
+    try:
+        lat = float(parts[0])
+        lon = float(parts[1])
+        radius = float(parts[2]) if len(parts) >= 3 else 250.0
+    except ValueError:
+        return None
+    return (lat, lon, max(radius, 10.0))
+
+
+def _distance_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371000.0
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _compute_presence(factory: Factory | None, latitude: float | None, longitude: float | None) -> tuple[bool | None, float | None]:
+    if latitude is None or longitude is None or not factory:
+        return (None, None)
+    geo = _parse_factory_geo(factory.location)
+    if not geo:
+        return (None, None)
+    f_lat, f_lon, radius = geo
+    distance = _distance_meters(latitude, longitude, f_lat, f_lon)
+    return (distance <= radius, round(distance, 1))
+
+
+def _upsert_presence(
+    db: Session,
+    *,
+    user_id: int,
+    factory_id: int | None,
+    latitude: float | None,
+    longitude: float | None,
+    accuracy_m: float | None,
+    captured_at: datetime | None,
+    is_in_factory: bool | None,
+    distance_from_factory_m: float | None,
+) -> None:
+    if latitude is None or longitude is None:
+        return
+    row = db.scalar(select(UserPresence).where(UserPresence.user_id == user_id))
+    last_seen = captured_at or datetime.utcnow()
+    if row:
+        row.factory_id = factory_id
+        row.latitude = latitude
+        row.longitude = longitude
+        row.accuracy_m = accuracy_m
+        row.is_in_factory = is_in_factory
+        row.distance_from_factory_m = distance_from_factory_m
+        row.last_seen_at = last_seen
+        return
+    db.add(
+        UserPresence(
+            user_id=user_id,
+            factory_id=factory_id,
+            latitude=latitude,
+            longitude=longitude,
+            accuracy_m=accuracy_m,
+            is_in_factory=is_in_factory,
+            distance_from_factory_m=distance_from_factory_m,
+            last_seen_at=last_seen,
+        )
+    )
 
 
 def _notify_request_submission(
@@ -113,6 +195,9 @@ def create_request(
     reason: str = Form(...),
     urgent_flag: bool = Form(False),
     requested_by: str = Form(...),
+    geo_latitude: float | None = Form(None),
+    geo_longitude: float | None = Form(None),
+    geo_accuracy_m: float | None = Form(None),
     notes: str | None = Form(None),
     save_as_draft: bool = Form(False),
     bill_image: UploadFile | None = File(None),
@@ -127,6 +212,9 @@ def create_request(
         raise HTTPException(400, "GST percent cannot be negative")
 
     computed_amount, computed_final_amount = _compute_amounts(qty, rate, gst_percent)
+
+    factory_obj = db.get(Factory, factory_id)
+    is_in_factory, distance_from_factory_m = _compute_presence(factory_obj, geo_latitude, geo_longitude)
 
     req = PurchaseRequest(
         request_date=request_date,
@@ -145,6 +233,12 @@ def create_request(
         urgent_flag=urgent_flag,
         requested_by=requested_by,
         requested_by_user_id=user.id,
+        geo_latitude=geo_latitude,
+        geo_longitude=geo_longitude,
+        geo_accuracy_m=geo_accuracy_m,
+        geo_captured_at=datetime.utcnow() if geo_latitude is not None and geo_longitude is not None else None,
+        is_in_factory=is_in_factory,
+        distance_from_factory_m=distance_from_factory_m,
         bill_image_path=_save_file(bill_image),
         notes=notes,
         approval_status="Draft" if save_as_draft else "Pending",
@@ -152,6 +246,17 @@ def create_request(
         is_unread_admin=user.role == "factory",
     )
     db.add(req)
+    _upsert_presence(
+        db,
+        user_id=user.id,
+        factory_id=factory_id,
+        latitude=geo_latitude,
+        longitude=geo_longitude,
+        accuracy_m=geo_accuracy_m,
+        captured_at=req.geo_captured_at,
+        is_in_factory=is_in_factory,
+        distance_from_factory_m=distance_from_factory_m,
+    )
     db.flush()
     log_change(db, entity="purchase_request", entity_id=req.id, action="CREATE", new_value=_as_dict(req), changed_by=user.id)
     db.commit()
@@ -178,6 +283,10 @@ def create_request(
 @router.post("/requests/simple-bill")
 def create_simple_bill_upload(
     vendor_name: str = Form(...),
+    factory_id: int | None = Form(None),
+    geo_latitude: float | None = Form(None),
+    geo_longitude: float | None = Form(None),
+    geo_accuracy_m: float | None = Form(None),
     bill_image: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -193,9 +302,15 @@ def create_simple_bill_upload(
     if not bill_path:
         raise HTTPException(400, "Actual bill image is required")
 
-    default_factory = db.scalar(
-        select(Factory).where(Factory.is_deleted.is_(False)).order_by(Factory.id.asc())
-    )
+    default_factory = None
+    if factory_id:
+        default_factory = db.scalar(
+            select(Factory).where(and_(Factory.id == factory_id, Factory.is_deleted.is_(False)))
+        )
+    if not default_factory:
+        default_factory = db.scalar(
+            select(Factory).where(Factory.is_deleted.is_(False)).order_by(Factory.id.asc())
+        )
     default_vendor = db.scalar(
         select(Vendor).where(Vendor.is_deleted.is_(False)).order_by(Vendor.id.asc())
     )
@@ -203,6 +318,8 @@ def create_simple_bill_upload(
         raise HTTPException(400, "No active factory found in masters")
     if not default_vendor:
         raise HTTPException(400, "No active vendor found in masters")
+
+    is_in_factory, distance_from_factory_m = _compute_presence(default_factory, geo_latitude, geo_longitude)
 
     req = PurchaseRequest(
         request_date=date.today(),
@@ -221,6 +338,12 @@ def create_simple_bill_upload(
         urgent_flag=False,
         requested_by=user.name,
         requested_by_user_id=user.id,
+        geo_latitude=geo_latitude,
+        geo_longitude=geo_longitude,
+        geo_accuracy_m=geo_accuracy_m,
+        geo_captured_at=datetime.utcnow() if geo_latitude is not None and geo_longitude is not None else None,
+        is_in_factory=is_in_factory,
+        distance_from_factory_m=distance_from_factory_m,
         bill_image_path=bill_path,
         notes="Simple bill upload",
         approval_status="Pending",
@@ -228,6 +351,17 @@ def create_simple_bill_upload(
         is_unread_admin=True,
     )
     db.add(req)
+    _upsert_presence(
+        db,
+        user_id=user.id,
+        factory_id=default_factory.id,
+        latitude=geo_latitude,
+        longitude=geo_longitude,
+        accuracy_m=geo_accuracy_m,
+        captured_at=req.geo_captured_at,
+        is_in_factory=is_in_factory,
+        distance_from_factory_m=distance_from_factory_m,
+    )
     db.flush()
     log_change(
         db,
@@ -317,6 +451,9 @@ def update_request(
     reason: str = Form(...),
     urgent_flag: bool = Form(False),
     requested_by: str = Form(...),
+    geo_latitude: float | None = Form(None),
+    geo_longitude: float | None = Form(None),
+    geo_accuracy_m: float | None = Form(None),
     notes: str | None = Form(None),
     save_as_draft: bool = Form(False),
     bill_image: UploadFile | None = File(None),
@@ -356,6 +493,26 @@ def update_request(
     req.requested_by = requested_by
     req.notes = notes
 
+    if geo_latitude is not None and geo_longitude is not None:
+        req.geo_latitude = geo_latitude
+        req.geo_longitude = geo_longitude
+        req.geo_accuracy_m = geo_accuracy_m
+        req.geo_captured_at = datetime.utcnow()
+        factory_obj = db.get(Factory, factory_id)
+        req.is_in_factory, req.distance_from_factory_m = _compute_presence(factory_obj, geo_latitude, geo_longitude)
+
+        _upsert_presence(
+            db,
+            user_id=user.id,
+            factory_id=factory_id,
+            latitude=geo_latitude,
+            longitude=geo_longitude,
+            accuracy_m=geo_accuracy_m,
+            captured_at=req.geo_captured_at,
+            is_in_factory=req.is_in_factory,
+            distance_from_factory_m=req.distance_from_factory_m,
+        )
+
     if bill_image:
         req.bill_image_path = _save_file(bill_image)
 
@@ -383,6 +540,94 @@ def update_request(
     if user.role == "factory" and req.approval_status == "Pending" and old_status != "Pending" and not telegram_sent:
         message = "Updated, but Telegram notification failed"
     return {"message": message}
+
+
+@router.post("/presence/ping")
+def presence_ping(
+    latitude: float = Form(...),
+    longitude: float = Form(...),
+    accuracy_m: float | None = Form(None),
+    factory_id: int | None = Form(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if user.role != "factory":
+        raise HTTPException(403, "Only factory users can update location")
+
+    selected_factory_id = factory_id
+    if not selected_factory_id:
+        selected_factory_id = db.scalar(
+            select(Factory.id).where(Factory.is_deleted.is_(False)).order_by(Factory.id.asc())
+        )
+
+    factory_obj = db.get(Factory, selected_factory_id) if selected_factory_id else None
+    is_in_factory, distance_from_factory_m = _compute_presence(factory_obj, latitude, longitude)
+    captured_at = datetime.utcnow()
+
+    _upsert_presence(
+        db,
+        user_id=user.id,
+        factory_id=selected_factory_id,
+        latitude=latitude,
+        longitude=longitude,
+        accuracy_m=accuracy_m,
+        captured_at=captured_at,
+        is_in_factory=is_in_factory,
+        distance_from_factory_m=distance_from_factory_m,
+    )
+    db.commit()
+
+    return {
+        "message": "Location updated",
+        "is_in_factory": is_in_factory,
+        "distance_from_factory_m": distance_from_factory_m,
+        "last_seen_at": str(captured_at),
+    }
+
+
+@router.get("/presence/users")
+def list_presence_users(
+    db: Session = Depends(get_db),
+    _user: User = Depends(admin_required),
+):
+    stale_before = datetime.utcnow() - timedelta(minutes=10)
+    rows = db.execute(
+        select(UserPresence, User, Factory)
+        .join(User, User.id == UserPresence.user_id)
+        .join(Factory, Factory.id == UserPresence.factory_id, isouter=True)
+        .where(User.role == "factory")
+        .order_by(User.name.asc())
+    ).all()
+
+    items = []
+    for presence, usr, fac in rows:
+        is_stale = presence.last_seen_at < stale_before
+        if is_stale:
+            status = "Offline"
+        elif presence.is_in_factory is True:
+            status = "In Factory"
+        elif presence.is_in_factory is False:
+            status = "Outside"
+        else:
+            status = "Unknown"
+
+        items.append(
+            {
+                "user_id": usr.id,
+                "user_name": usr.name,
+                "username": usr.username,
+                "factory": fac.name if fac else "",
+                "status": status,
+                "is_in_factory": presence.is_in_factory,
+                "distance_from_factory_m": presence.distance_from_factory_m,
+                "accuracy_m": presence.accuracy_m,
+                "last_seen_at": str(presence.last_seen_at),
+                "latitude": presence.latitude,
+                "longitude": presence.longitude,
+            }
+        )
+
+    return {"items": items}
 
 
 @router.delete("/requests/{request_id}")

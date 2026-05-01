@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.provider.MediaStore
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.GeolocationPermissions
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -28,6 +29,8 @@ class MainActivity : AppCompatActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var cameraImageUri: Uri? = null
     private var pendingFileChooserParams: WebChromeClient.FileChooserParams? = null
+    private var pendingGeoCallback: GeolocationPermissions.Callback? = null
+    private var pendingGeoOrigin: String? = null
 
     private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val parsedResults = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
@@ -51,6 +54,14 @@ class MainActivity : AppCompatActivity() {
             launchGalleryOnly()
         }
         pendingFileChooserParams = null
+    }
+
+    private val locationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        pendingGeoCallback?.invoke(pendingGeoOrigin, granted, false)
+        pendingGeoCallback = null
+        pendingGeoOrigin = null
     }
 
     private fun createImageUri(): Uri {
@@ -97,6 +108,7 @@ class MainActivity : AppCompatActivity() {
         webView.settings.domStorageEnabled = true
         webView.settings.allowFileAccess = true
         webView.settings.allowContentAccess = true
+        webView.settings.setGeolocationEnabled(true)
         webView.settings.cacheMode = WebSettings.LOAD_NO_CACHE
         webView.settings.userAgentString = webView.settings.userAgentString + " FactoryApprovalAndroid/1.0"
         webView.clearCache(true)
@@ -123,6 +135,29 @@ class MainActivity : AppCompatActivity() {
                     launchFileChooser(fileChooserParams)
                 }
                 return true
+            }
+
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String?,
+                callback: GeolocationPermissions.Callback?
+            ) {
+                if (callback == null || origin == null) {
+                    super.onGeolocationPermissionsShowPrompt(origin, callback)
+                    return
+                }
+
+                if (ContextCompat.checkSelfPermission(
+                        this@MainActivity,
+                        Manifest.permission.ACCESS_FINE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED
+                ) {
+                    callback.invoke(origin, true, false)
+                    return
+                }
+
+                pendingGeoCallback = callback
+                pendingGeoOrigin = origin
+                locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
             }
         }
 

@@ -30,6 +30,23 @@
     </div>
 </div>
 
+<div class="card p-3 mb-3">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="mb-0">Factory User Presence (Live)</h6>
+        <button class="btn btn-sm btn-outline-primary" onclick="loadPresenceUsers()">Refresh</button>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-sm align-middle" id="presenceTable">
+            <thead>
+            <tr>
+                <th>User</th><th>Factory</th><th>Status</th><th>Distance</th><th>Accuracy</th><th>Last Seen</th><th>Map</th>
+            </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+</div>
+
 <ul class="nav nav-tabs mb-2" id="adminTabs" role="tablist">
     <li class="nav-item" role="presentation">
         <button class="nav-link active" id="requests-tab" data-bs-toggle="tab" data-bs-target="#requestsPane" type="button" role="tab" aria-controls="requestsPane" aria-selected="true">All Requests</button>
@@ -46,7 +63,7 @@
                 <table class="table table-sm align-middle" id="reqTable">
                     <thead>
                     <tr>
-                        <th>ID</th><th>Date</th><th>Factory</th><th>Vendor</th><th>Item</th><th>Qty</th><th>Amount</th><th>Requested By</th><th>Approval</th><th>Payment</th><th>Actions</th>
+                        <th>ID</th><th>Date</th><th>Factory</th><th>Vendor</th><th>Item</th><th>Qty</th><th>Amount</th><th>Requested By</th><th>Location</th><th>Approval</th><th>Payment</th><th>Actions</th>
                     </tr>
                     </thead>
                     <tbody></tbody>

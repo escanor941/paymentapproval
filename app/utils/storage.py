@@ -18,12 +18,12 @@ def _upload_dir() -> Path:
 
 
 def _upload_to_s3(filename: str, content: bytes, content_type: str | None) -> str:
-    endpoint = os.getenv("S3_ENDPOINT_URL")
-    bucket = os.getenv("S3_BUCKET")
-    region = os.getenv("S3_REGION", "auto")
-    access_key = os.getenv("S3_ACCESS_KEY")
-    secret_key = os.getenv("S3_SECRET_KEY")
-    public_base_url = os.getenv("S3_PUBLIC_BASE_URL")
+    endpoint = os.getenv("S3_ENDPOINT_URL") or os.getenv("R2_ENDPOINT_URL")
+    bucket = os.getenv("S3_BUCKET") or os.getenv("R2_BUCKET")
+    region = os.getenv("S3_REGION") or os.getenv("R2_REGION") or "auto"
+    access_key = os.getenv("S3_ACCESS_KEY") or os.getenv("R2_ACCESS_KEY")
+    secret_key = os.getenv("S3_SECRET_KEY") or os.getenv("R2_SECRET_KEY")
+    public_base_url = os.getenv("S3_PUBLIC_BASE_URL") or os.getenv("R2_PUBLIC_BASE_URL")
 
     if not all([bucket, access_key, secret_key]):
         raise RuntimeError("S3 storage is enabled but missing S3_BUCKET/S3_ACCESS_KEY/S3_SECRET_KEY")
@@ -34,7 +34,7 @@ def _upload_to_s3(filename: str, content: bytes, content_type: str | None) -> st
         region_name=region,
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
-        config=Config(signature_version="s3v4"),
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
     )
     s3.put_object(
         Bucket=bucket,
@@ -58,7 +58,7 @@ def save_upload(upload: UploadFile | None) -> str | None:
     filename = f"{uuid4().hex}{ext}"
     content = upload.file.read()
 
-    if os.getenv("STORAGE_BACKEND", "local").lower() == "s3":
+    if os.getenv("STORAGE_BACKEND", "local").lower() in {"s3", "r2"}:
         return _upload_to_s3(filename, content, upload.content_type)
 
     upload_dir = _upload_dir()
