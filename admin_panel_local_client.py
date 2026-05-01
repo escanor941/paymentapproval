@@ -1,5 +1,7 @@
 import os
 import sqlite3
+import io
+import re
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -13,6 +15,12 @@ try:
     from openpyxl import Workbook
 except Exception:  # pragma: no cover - optional import safety
     Workbook = None
+
+try:
+    from PIL import Image, ImageTk
+except Exception:  # pragma: no cover - optional import safety
+    Image = None
+    ImageTk = None
 
 APP_NAME = "EMDAdminPanel"
 DEFAULT_BASE_URL = "https://paymentapproval.onrender.com"
@@ -88,6 +96,13 @@ class AdminLocalClient:
         self.notebook = None
         self.requests_frame = None
         self.bills_frame = None
+        self.preview_frame = None
+        self.preview_canvas = None
+        self.preview_status = tk.StringVar(value="No bill loaded")
+        self._preview_photo = None
+        self._preview_pil_image = None
+        self.preview_req_id: int | None = None
+        self.preview_filename = ""
 
         self._build_ui()
         self.load_local_cache()
@@ -159,6 +174,7 @@ class AdminLocalClient:
         _btn(toolbar, "\U0001f510  Login",        self.login).pack(side="left", padx=(8, 4))
         _btn(toolbar, "\U0001f504  Sync",          self.sync_from_server, "#1565a0").pack(side="left", padx=4)
         _btn(toolbar, "\U0001f9fe  View Bill",     self.view_bill_selected, "#1565a0").pack(side="left", padx=4)
+        _btn(toolbar, "\U0001f4e5  Download Bill", self.download_bill_selected, "#1565a0").pack(side="left", padx=4)
         _btn(toolbar, "\u2705  Approve",           self.approve_selected, "#1b5e20").pack(side="left", padx=4)
         _btn(toolbar, "\u274c  Reject",            self.reject_selected, "#b71c1c").pack(side="left", padx=4)
         _btn(toolbar, "\u23f8  Hold",              self.hold_selected, "#e65100").pack(side="left", padx=4)
@@ -195,10 +211,12 @@ class AdminLocalClient:
 
         self.requests_frame = ttk.Frame(body)
         self.bills_frame = ttk.Frame(body)
+        self.preview_frame = ttk.Frame(body)
         locations_tab = ttk.Frame(body)
         
         body.add(self.requests_frame, text="Requests")
         body.add(self.bills_frame, text="Bill Uploads")
+        body.add(self.preview_frame, text="Bill Preview")
         body.add(locations_tab, text="Factory Locations")
 
         self.tree = ttk.Treeview(self.requests_frame, columns=cols, show="headings")
@@ -248,6 +266,25 @@ class AdminLocalClient:
         self.bill_tree.configure(yscrollcommand=bill_vs.set)
         self.bill_tree.pack(side="left", fill="both", expand=True, padx=(0, 0), pady=0)
         bill_vs.pack(side="right", fill="y", padx=(0, 0), pady=0)
+
+        preview_top = ttk.Frame(self.preview_frame, padding=(0, 0, 0, 8))
+        preview_top.pack(fill="x")
+        ttk.Label(preview_top, textvariable=self.preview_status, foreground="#1a3a6e").pack(side="left")
+        ttk.Button(preview_top, text="Load Selected Bill", command=self.view_bill_selected).pack(side="right", padx=(6, 0))
+        ttk.Button(preview_top, text="Download", command=self.download_bill_selected).pack(side="right")
+
+        preview_wrap = ttk.Frame(self.preview_frame)
+        preview_wrap.pack(fill="both", expand=True)
+        self.preview_canvas = tk.Canvas(preview_wrap, bg="#ffffff", highlightthickness=0)
+        preview_vs = ttk.Scrollbar(preview_wrap, orient="vertical", command=self.preview_canvas.yview)
+        preview_hs = ttk.Scrollbar(preview_wrap, orient="horizontal", command=self.preview_canvas.xview)
+        self.preview_canvas.configure(yscrollcommand=preview_vs.set, xscrollcommand=preview_hs.set)
+        self.preview_canvas.grid(row=0, column=0, sticky="nsew")
+        preview_vs.grid(row=0, column=1, sticky="ns")
+        preview_hs.grid(row=1, column=0, sticky="ew")
+        preview_wrap.rowconfigure(0, weight=1)
+        preview_wrap.columnconfigure(0, weight=1)
+        self.preview_canvas.bind("<Configure>", self._on_preview_canvas_resize)
 
         loc_top = ttk.Frame(locations_tab, padding=(0, 0, 0, 10))
         loc_top.pack(fill="x")
@@ -594,6 +631,24 @@ class AdminLocalClient:
         self._mark_item_as_viewed(req_id)
         return req_id
 
+    def selected_request_id_any(self) -> int | None:
+        req_id = None
+        main_item = self.tree.focus()
+        bill_item = self.bill_tree.focus()
+        if main_item:
+            vals = self.tree.item(main_item, "values")
+            if vals:
+                req_id = int(vals[0])
+        elif bill_item:
+            vals = self.bill_tree.item(bill_item, "values")
+            if vals:
+                req_id = int(vals[0])
+        if req_id is None:
+            messagebox.showwarning("Select", "Select a request or bill upload first.")
+            return None
+        self._mark_item_as_viewed(req_id)
+        return req_id
+
     def approve_selected(self) -> None:
         req_id = self.selected_request_id()
         if req_id is None:
@@ -754,73 +809,158 @@ class AdminLocalClient:
         dialog.wait_window()
 
     def view_bill_selected(self) -> None:
-        req_id = None
-        main_item = self.tree.focus()
-        bill_item = self.bill_tree.focus()
-        if main_item:
-            vals = self.tree.item(main_item, "values")
-            if vals:
-                req_id = int(vals[0])
-                self._mark_item_as_viewed(req_id)
-        elif bill_item:
-            vals = self.bill_tree.item(bill_item, "values")
-            if vals:
-                req_id = int(vals[0])
-                self._mark_item_as_viewed(req_id)
-
+        req_id = self.selected_request_id_any()
         if req_id is None:
-            messagebox.showwarning("Select", "Select a request or bill upload first.")
             return
-
         path = (self.bill_paths.get(req_id) or "").strip()
         if not path:
             messagebox.showinfo("Bill", "No bill file attached for this request.")
             return
-        base = self.base_url.get().rstrip("/")
-        # Use the authenticated session to resolve the bill URL on the server,
-        # then open the final location (R2 URL) in the browser.
-        # The browser doesn't carry the server session cookie, so we resolve here.
-        try:
-            resp = self.session.get(
-                f"{base}/requests/{req_id}/bill",
-                allow_redirects=False,
-                timeout=15,
-            )
-            if resp.status_code in (301, 302, 307, 308):
-                location = resp.headers.get("Location", "")
-                # Detect session-expired redirect to /login
-                if "/login" in location or not location:
-                    messagebox.showerror(
-                        "Session Expired",
-                        "Your session has expired. Please logout and login again.",
-                    )
-                    return
-                # Make absolute if server returned a relative URL
-                final_url = location if location.startswith("http") else f"{base}{location}"
-            elif resp.status_code == 200:
-                # Local file served directly
-                final_url = f"{base}/requests/{req_id}/bill"
-            elif resp.status_code in (401, 403):
-                messagebox.showerror(
-                    "Session Expired",
-                    "Your session has expired. Please logout and login again.",
-                )
-                return
-            else:
-                detail = ""
-                try:
-                    detail = resp.json().get("detail", "")
-                except Exception:
-                    pass
-                messagebox.showerror("Bill Error", detail or f"Server returned {resp.status_code}")
-                return
-        except Exception as exc:
-            messagebox.showerror("Bill Error", str(exc))
+
+        resp, filename, err = self._fetch_bill_response(req_id, stream=False)
+        if err:
+            self.preview_status.set(err)
+            self._show_preview_message(err)
+            messagebox.showerror("Bill Error", err)
             return
-        if final_url:
-            webbrowser.open_new_tab(final_url)
-        else:
-            messagebox.showerror("Bill Error", "Could not resolve bill URL.")
+
+        content = resp.content
+        self.preview_req_id = req_id
+        self.preview_filename = filename
+        self._render_bill_preview(content, filename, resp.headers.get("Content-Type", ""))
+        self.preview_status.set(f"Previewing request #{req_id} - {filename}")
+        if self.notebook and self.preview_frame:
+            self.notebook.select(self.preview_frame)
+
+    def download_bill_selected(self) -> None:
+        req_id = self.selected_request_id_any()
+        if req_id is None:
+            return
+        path = (self.bill_paths.get(req_id) or "").strip()
+        if not path:
+            messagebox.showinfo("Bill", "No bill file attached for this request.")
+            return
+
+        resp, filename, err = self._fetch_bill_response(req_id, stream=True)
+        if err:
+            messagebox.showerror("Download Bill", err)
+            return
+
+        ext = Path(filename).suffix or ".bin"
+        default_name = f"request_{req_id}_bill{ext}"
+        out_file = filedialog.asksaveasfilename(
+            title="Save Bill File",
+            defaultextension=ext,
+            initialfile=default_name,
+            filetypes=[("All Files", "*.*")],
+        )
+        if not out_file:
+            return
+
+        try:
+            with open(out_file, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 64):
+                    if chunk:
+                        f.write(chunk)
+            messagebox.showinfo("Download Bill", f"Bill downloaded successfully:\n{out_file}")
+        except Exception as exc:
+            messagebox.showerror("Download Bill", f"Failed to save file: {exc}")
+
+    def _fetch_bill_response(self, req_id: int, stream: bool) -> tuple[requests.Response | None, str, str | None]:
+        base = self.base_url.get().rstrip("/")
+        endpoint = f"{base}/requests/{req_id}/bill"
+        try:
+            first = self.session.get(endpoint, allow_redirects=False, timeout=20, stream=stream)
+        except Exception as exc:
+            return None, "", f"Failed to contact server: {exc}"
+
+        if first.status_code in (301, 302, 307, 308):
+            location = first.headers.get("Location", "")
+            if not location or "/login" in location:
+                return None, "", "Session expired. Please login again."
+            target = location if location.startswith("http") else urljoin(base + "/", location.lstrip("/"))
+            try:
+                resp = self.session.get(target, timeout=30, stream=stream)
+            except Exception as exc:
+                return None, "", f"Failed to fetch bill file: {exc}"
+            if resp.status_code != 200:
+                return None, "", f"Failed to fetch bill file (HTTP {resp.status_code})"
+            return resp, self._filename_from_response(resp, target, req_id), None
+
+        if first.status_code == 200:
+            return first, self._filename_from_response(first, endpoint, req_id), None
+
+        if first.status_code in (401, 403):
+            return None, "", "Session expired. Please login again."
+
+        detail = ""
+        try:
+            detail = first.json().get("detail", "")
+        except Exception:
+            pass
+        return None, "", (detail or f"Server returned HTTP {first.status_code}")
+
+    def _filename_from_response(self, resp: requests.Response, source_url: str, req_id: int) -> str:
+        cd = resp.headers.get("Content-Disposition", "")
+        if cd:
+            m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', cd, re.IGNORECASE)
+            if m:
+                name = m.group(1).strip()
+                if name:
+                    return Path(name).name
+        guessed = Path(source_url.split("?", 1)[0]).name
+        if guessed and "." in guessed:
+            return guessed
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+        if "png" in ctype:
+            return f"request_{req_id}_bill.png"
+        if "jpeg" in ctype or "jpg" in ctype:
+            return f"request_{req_id}_bill.jpg"
+        if "pdf" in ctype:
+            return f"request_{req_id}_bill.pdf"
+        return f"request_{req_id}_bill.bin"
+
+    def _show_preview_message(self, message: str) -> None:
+        if not self.preview_canvas:
+            return
+        self.preview_canvas.delete("all")
+        self.preview_canvas.create_text(18, 18, anchor="nw", text=message, fill="#1a3a6e", font=("Segoe UI", 11))
+        self.preview_canvas.configure(scrollregion=(0, 0, 800, 500))
+
+    def _render_bill_preview(self, content: bytes, filename: str, content_type: str) -> None:
+        lower_name = filename.lower()
+        ctype = (content_type or "").lower()
+
+        if lower_name.endswith(".pdf") or "application/pdf" in ctype:
+            self._show_preview_message("PDF preview is not supported inside the app. Use Download Bill to open it.")
+            return
+
+        if Image is None or ImageTk is None:
+            self._show_preview_message("Image preview needs Pillow. Use Download Bill if preview is unavailable.")
+            return
+
+        try:
+            img = Image.open(io.BytesIO(content))
+            self._preview_pil_image = img
+            self._redraw_preview_image()
+        except Exception:
+            self._show_preview_message("This file type is not previewable. Use Download Bill.")
+
+    def _on_preview_canvas_resize(self, _event=None) -> None:
+        if self._preview_pil_image is not None:
+            self._redraw_preview_image()
+
+    def _redraw_preview_image(self) -> None:
+        if not self.preview_canvas or self._preview_pil_image is None or ImageTk is None:
+            return
+        canvas_w = max(self.preview_canvas.winfo_width() - 20, 200)
+        canvas_h = max(self.preview_canvas.winfo_height() - 20, 200)
+        img = self._preview_pil_image.copy()
+        img.thumbnail((canvas_w, canvas_h))
+        self._preview_photo = ImageTk.PhotoImage(img)
+        self.preview_canvas.delete("all")
+        self.preview_canvas.create_image(10, 10, anchor="nw", image=self._preview_photo)
+        self.preview_canvas.configure(scrollregion=(0, 0, self._preview_photo.width() + 20, self._preview_photo.height() + 20))
 
     def export_local_excel(self) -> None:
         if Workbook is None:
