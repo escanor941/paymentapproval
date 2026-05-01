@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['admin_panel_launcher.py'],
+    ['admin_panel_local_client.py'],
     pathex=[],
     binaries=[],
     datas=[],

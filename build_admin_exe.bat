@@ -9,7 +9,7 @@ if not exist "%PYTHON_EXE%" (
 )
 
 cd /d "%~dp0"
-"%PYTHON_EXE%" -m PyInstaller --noconfirm --clean --onefile --windowed --name EMDAdminPanel admin_panel_launcher.py
+"%PYTHON_EXE%" -m PyInstaller --noconfirm --clean --onefile --windowed --name EMDAdminPanel admin_panel_local_client.py
 
 echo.
 echo Build complete. EXE path:
