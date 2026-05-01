@@ -1,7 +1,7 @@
 import math
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -633,13 +633,21 @@ def list_presence_users(
 @router.get("/requests/{request_id}/bill")
 def view_bill(
     request_id: int,
+    request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
 ):
-    """Redirect to the bill image, whether stored in R2 or local uploads."""
+    """Redirect to the bill image. Redirects to /login for browsers if not authenticated."""
     from fastapi.responses import RedirectResponse, FileResponse
     import os
     from pathlib import Path
+
+    # Manual auth: redirect to /login for browsers instead of returning JSON 401
+    user_id = request.session.get("user_id")
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    user = db.get(User, user_id)
+    if not user or not user.is_active:
+        return RedirectResponse(url="/login", status_code=302)
 
     req = db.get(PurchaseRequest, request_id)
     if not req or req.is_deleted:
@@ -663,7 +671,11 @@ def view_bill(
     if local_path.exists():
         return FileResponse(str(local_path))
 
-    raise HTTPException(404, "Bill file not found on server")
+    raise HTTPException(
+        404,
+        "This bill was uploaded to local storage before cloud storage was enabled "
+        "and is no longer accessible. Please ask the factory to re-upload the bill.",
+    )
 
 
 @router.delete("/requests/{request_id}")

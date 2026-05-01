@@ -787,11 +787,25 @@ class AdminLocalClient:
                 timeout=15,
             )
             if resp.status_code in (301, 302, 307, 308):
-                final_url = resp.headers.get("Location", "")
+                location = resp.headers.get("Location", "")
+                # Detect session-expired redirect to /login
+                if "/login" in location or not location:
+                    messagebox.showerror(
+                        "Session Expired",
+                        "Your session has expired. Please logout and login again.",
+                    )
+                    return
+                # Make absolute if server returned a relative URL
+                final_url = location if location.startswith("http") else f"{base}{location}"
             elif resp.status_code == 200:
-                # Local file served directly — open via session can't pass to browser easily,
-                # so open the endpoint URL (browser will prompt login if needed)
+                # Local file served directly
                 final_url = f"{base}/requests/{req_id}/bill"
+            elif resp.status_code in (401, 403):
+                messagebox.showerror(
+                    "Session Expired",
+                    "Your session has expired. Please logout and login again.",
+                )
+                return
             else:
                 detail = ""
                 try:
