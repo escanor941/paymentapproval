@@ -630,7 +630,44 @@ def list_presence_users(
     return {"items": items}
 
 
+@router.get("/requests/{request_id}/bill")
+def view_bill(
+    request_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Redirect to the bill image, whether stored in R2 or local uploads."""
+    from fastapi.responses import RedirectResponse, FileResponse
+    import os
+    from pathlib import Path
+
+    req = db.get(PurchaseRequest, request_id)
+    if not req or req.is_deleted:
+        raise HTTPException(404, "Request not found")
+    if user.role != "admin" and req.requested_by_user_id != user.id:
+        raise HTTPException(403, "Not authorized")
+
+    path = (req.bill_image_path or "").strip()
+    if not path:
+        raise HTTPException(404, "No bill attached to this request")
+
+    # R2 / S3 — full public URL → redirect the browser directly
+    if path.startswith("http://") or path.startswith("https://"):
+        return RedirectResponse(url=path, status_code=302)
+
+    # Local storage — serve the file from disk
+    local_path = Path(path.lstrip("/"))
+    if not local_path.exists():
+        upload_dir = Path(os.getenv("UPLOAD_DIR", "uploads"))
+        local_path = upload_dir / local_path.name
+    if local_path.exists():
+        return FileResponse(str(local_path))
+
+    raise HTTPException(404, "Bill file not found on server")
+
+
 @router.delete("/requests/{request_id}")
+
 def delete_request(
     request_id: int,
     db: Session = Depends(get_db),

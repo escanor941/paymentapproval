@@ -83,7 +83,7 @@ function renderRequests(items) {
       <td>${b(it.payment_status)}</td>
       <td class="d-flex flex-wrap gap-1">
         <button class="btn btn-sm btn-outline-dark" onclick="viewDetails(${it.id})">View</button>
-        ${it.bill_image_path ? `<a target="_blank" class="btn btn-sm btn-outline-secondary" href="${it.bill_image_path}">Bill</a>` : ''}
+        ${it.bill_image_path ? `<a target="_blank" class="btn btn-sm btn-outline-secondary" href="/requests/${it.id}/bill">Bill</a>` : ''}
         <button class="btn btn-sm btn-outline-primary" onclick="editRequest(${it.id})">Edit</button>
         <button class="btn btn-sm btn-success" onclick="openApprove(${it.id})">Approve</button>
         <button class="btn btn-sm btn-danger" onclick="openReject(${it.id})">Reject</button>
@@ -214,7 +214,7 @@ async function loadSimpleBills() {
       <td>${it.vendor || ''}</td>
       <td>${it.requested_by || ''}</td>
       <td>${b(it.approval_status)}</td>
-      <td>${it.bill_image_path ? `<a target="_blank" class="btn btn-sm btn-outline-secondary" href="${it.bill_image_path}">View Bill</a>` : '<span class="text-muted">No file</span>'}</td>
+      <td>${it.bill_image_path ? `<a target="_blank" class="btn btn-sm btn-outline-secondary" href="/requests/${it.id}/bill">View Bill</a>` : '<span class="text-muted">No file</span>'}</td>
     `;
     simpleBillBody.appendChild(tr);
   });
