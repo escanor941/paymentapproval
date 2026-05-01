@@ -103,6 +103,7 @@ class AdminLocalClient:
         self._preview_pil_image = None
         self.preview_req_id: int | None = None
         self.preview_filename = ""
+        self._last_bill_url_by_req: dict[int, str] = {}
 
         self._build_ui()
         self.load_local_cache()
@@ -817,6 +818,13 @@ class AdminLocalClient:
             messagebox.showinfo("Bill", "No bill file attached for this request.")
             return
 
+        # If the same bill is already loaded in preview, avoid refetching and reuse it.
+        if req_id == self.preview_req_id and (self._preview_pil_image is not None or self._preview_photo is not None):
+            self.preview_status.set(f"Previewing request #{req_id} - {self.preview_filename}")
+            if self.notebook and self.preview_frame:
+                self.notebook.select(self.preview_frame)
+            return
+
         resp, filename, err = self._fetch_bill_response(req_id, stream=False)
         if err:
             self.preview_status.set(err)
@@ -869,6 +877,17 @@ class AdminLocalClient:
     def _fetch_bill_response(self, req_id: int, stream: bool) -> tuple[requests.Response | None, str, str | None]:
         base = self.base_url.get().rstrip("/")
         endpoint = f"{base}/requests/{req_id}/bill"
+
+        # Prefer last known-good URL for this request, if any.
+        last_url = (self._last_bill_url_by_req.get(req_id) or "").strip()
+        if last_url:
+            try:
+                cached_resp = self.session.get(last_url, timeout=30, stream=stream)
+                if cached_resp.status_code == 200:
+                    return cached_resp, self._filename_from_response(cached_resp, last_url, req_id), None
+            except Exception:
+                pass
+
         try:
             first = self.session.get(endpoint, allow_redirects=False, timeout=20, stream=stream)
         except Exception as exc:
@@ -885,6 +904,7 @@ class AdminLocalClient:
                 return None, "", f"Failed to fetch bill file: {exc}"
             if resp.status_code != 200:
                 return None, "", f"Failed to fetch bill file (HTTP {resp.status_code})"
+            self._last_bill_url_by_req[req_id] = target
             return resp, self._filename_from_response(resp, target, req_id), None
 
         if first.status_code == 200:
