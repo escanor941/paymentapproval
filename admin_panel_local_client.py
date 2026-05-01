@@ -66,8 +66,9 @@ def init_db() -> None:
 class AdminLocalClient:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("EMD Admin Panel - Local EXE")
-        self.root.geometry("1220x680")
+        self.root.title("EMD Group — Admin Panel")
+        self.root.geometry("1320x740")
+        self._apply_theme()
 
         self.session = requests.Session()
 
@@ -92,36 +93,89 @@ class AdminLocalClient:
         self.load_local_cache()
         self.schedule_auto_sync()
 
+    def _apply_theme(self) -> None:
+        BG, PRIMARY, WHITE = "#f0f4f8", "#1a3a6e", "#ffffff"
+        style = ttk.Style(self.root)
+        style.theme_use("clam")
+        self.root.configure(bg=BG)
+        style.configure(".", background=BG, font=("Segoe UI", 10))
+        style.configure("TFrame", background=BG)
+        style.configure("TLabel", background=BG, font=("Segoe UI", 10))
+        style.configure("TLabelframe", background=BG)
+        style.configure("TLabelframe.Label", background=BG, font=("Segoe UI", 10, "bold"), foreground=PRIMARY)
+        style.configure("TNotebook", background=BG, tabmargins=[2, 5, 2, 0])
+        style.configure("TNotebook.Tab", background="#c9d6e8", foreground=PRIMARY,
+                        font=("Segoe UI", 10, "bold"), padding=[14, 6])
+        style.map("TNotebook.Tab", background=[("selected", PRIMARY)], foreground=[("selected", WHITE)])
+        style.configure("Treeview", background=WHITE, fieldbackground=WHITE,
+                        font=("Segoe UI", 10), rowheight=28)
+        style.configure("Treeview.Heading", background=PRIMARY, foreground=WHITE,
+                        font=("Segoe UI", 10, "bold"), relief="flat")
+        style.map("Treeview", background=[("selected", "#2563a8")], foreground=[("selected", WHITE)])
+        style.configure("TEntry", fieldbackground=WHITE, font=("Segoe UI", 10), padding=4)
+        style.configure("TCombobox", fieldbackground=WHITE, font=("Segoe UI", 10))
+        style.configure("TCheckbutton", background=BG, font=("Segoe UI", 10))
+        style.configure("TScrollbar", background="#c9d6e8", troughcolor="#e0e8f0", relief="flat")
+
+    def _draw_emd_logo(self, canvas: tk.Canvas) -> None:
+        canvas.create_rectangle(0, 0, 190, 65, fill="#1a3a6e", outline="")
+        canvas.create_text(95, 20, text="EMD", fill="white", font=("Segoe UI", 22, "bold"), anchor="center")
+        canvas.create_line(18, 32, 68, 32, fill="#c8102e", width=2)
+        canvas.create_line(122, 32, 172, 32, fill="#c8102e", width=2)
+        canvas.create_text(95, 44, text="Group", fill="white", font=("Segoe UI", 12, "bold"), anchor="center")
+        canvas.create_rectangle(0, 55, 190, 65, fill="#c8102e", outline="")
+        canvas.create_text(95, 60, text="Scaffolding & Form Work", fill="white", font=("Segoe UI", 7), anchor="center")
+
     def _build_ui(self) -> None:
-        top = ttk.Frame(self.root, padding=10)
-        top.pack(fill="x")
+        # ── Header bar ──────────────────────────────────────────────────────
+        hdr = tk.Frame(self.root, bg="#1a3a6e", height=75)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        logo_c = tk.Canvas(hdr, width=190, height=65, bg="#1a3a6e", highlightthickness=0)
+        logo_c.pack(side="left", padx=(12, 0), pady=5)
+        self._draw_emd_logo(logo_c)
+        title_f = tk.Frame(hdr, bg="#1a3a6e")
+        title_f.pack(side="left", padx=14, pady=10)
+        tk.Label(title_f, text="Admin Panel", bg="#1a3a6e", fg="white",
+                 font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        tk.Label(title_f, text="Purchase Approval System  —  Head Office",
+                 bg="#1a3a6e", fg="#a8c4e0", font=("Segoe UI", 9)).pack(anchor="w")
+        right_hdr = tk.Frame(hdr, bg="#1a3a6e")
+        right_hdr.pack(side="right", padx=14)
+        self._conn_dot = tk.Label(right_hdr, text="●", bg="#1a3a6e", fg="#dc3545", font=("Segoe UI", 16))
+        self._conn_dot.pack(side="right", padx=(4, 0))
+        tk.Label(right_hdr, textvariable=self.conn_text, bg="#1a3a6e", fg="white",
+                 font=("Segoe UI", 10, "bold")).pack(side="right")
 
-        ttk.Label(top, text="Server URL").grid(row=0, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self.base_url, width=44).grid(row=1, column=0, padx=(0, 8), sticky="w")
+        # ── Toolbar ──────────────────────────────────────────────────────────
+        toolbar = tk.Frame(self.root, bg="#dce6f0", pady=5)
+        toolbar.pack(fill="x")
 
-        ttk.Label(top, text="Username").grid(row=0, column=1, sticky="w")
-        ttk.Entry(top, textvariable=self.username, width=18).grid(row=1, column=1, padx=(0, 8), sticky="w")
+        def _btn(parent, text, cmd, bg="#1a3a6e"):
+            return tk.Button(parent, text=text, command=cmd, bg=bg, fg="white",
+                             font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
+                             padx=10, pady=5, activebackground="#0d2a56", activeforeground="white", bd=0)
 
-        ttk.Label(top, text="Password").grid(row=0, column=2, sticky="w")
-        ttk.Entry(top, textvariable=self.password, show="*", width=18).grid(row=1, column=2, padx=(0, 8), sticky="w")
+        _btn(toolbar, "\U0001f510  Login",        self.login).pack(side="left", padx=(8, 4))
+        _btn(toolbar, "\U0001f504  Sync",          self.sync_from_server, "#1565a0").pack(side="left", padx=4)
+        _btn(toolbar, "\U0001f9fe  View Bill",     self.view_bill_selected, "#1565a0").pack(side="left", padx=4)
+        _btn(toolbar, "\u2705  Approve",           self.approve_selected, "#1b5e20").pack(side="left", padx=4)
+        _btn(toolbar, "\u274c  Reject",            self.reject_selected, "#b71c1c").pack(side="left", padx=4)
+        _btn(toolbar, "\u23f8  Hold",              self.hold_selected, "#e65100").pack(side="left", padx=4)
+        _btn(toolbar, "\U0001f4ca  Export Excel",  self.export_local_excel, "#4a148c").pack(side="left", padx=4)
 
-        ttk.Button(top, text="Login", command=self.login).grid(row=1, column=3, padx=(0, 6))
-        ttk.Button(top, text="Sync From Server", command=self.sync_from_server).grid(row=1, column=4, padx=(0, 6))
-        ttk.Button(top, text="View Bill", command=self.view_bill_selected).grid(row=1, column=5, padx=(0, 6))
-        ttk.Button(top, text="Approve", command=self.approve_selected).grid(row=1, column=6, padx=(0, 6))
-        ttk.Button(top, text="Reject", command=self.reject_selected).grid(row=1, column=7, padx=(0, 6))
-        ttk.Button(top, text="Hold", command=self.hold_selected).grid(row=1, column=8, padx=(0, 6))
-        ttk.Button(top, text="Export Local Excel", command=self.export_local_excel).grid(row=1, column=9, padx=(0, 6))
-
-        ttk.Label(top, textvariable=self.status_text, foreground="#0b5ed7").grid(
-            row=2, column=0, columnspan=7, pady=(8, 0), sticky="w"
-        )
-        tk.Label(top, textvariable=self.conn_text, fg="#dc3545", font=("Segoe UI", 10, "bold")).grid(
-            row=2, column=7, columnspan=1, pady=(8, 0), sticky="w"
-        )
-        ttk.Checkbutton(top, text="Auto Sync (10s)", variable=self.auto_sync_enabled).grid(
-            row=2, column=8, columnspan=2, pady=(8, 0), sticky="w"
-        )
+        # ── Login / connection bar ───────────────────────────────────────────
+        login_bar = ttk.Frame(self.root, padding=(8, 4, 8, 2))
+        login_bar.pack(fill="x")
+        ttk.Label(login_bar, text="Server URL").grid(row=0, column=0, sticky="w")
+        ttk.Entry(login_bar, textvariable=self.base_url, width=42, state="readonly").grid(row=1, column=0, padx=(0, 8), sticky="w")
+        ttk.Label(login_bar, text="Username").grid(row=0, column=1, sticky="w")
+        ttk.Entry(login_bar, textvariable=self.username, width=16).grid(row=1, column=1, padx=(0, 8), sticky="w")
+        ttk.Label(login_bar, text="Password").grid(row=0, column=2, sticky="w")
+        ttk.Entry(login_bar, textvariable=self.password, show="*", width=16).grid(row=1, column=2, padx=(0, 8), sticky="w")
+        ttk.Checkbutton(login_bar, text="Auto Sync (10s)", variable=self.auto_sync_enabled).grid(row=1, column=3, padx=8)
+        ttk.Label(login_bar, textvariable=self.status_text, foreground="#1a3a6e",
+                  font=("Segoe UI", 9, "italic")).grid(row=1, column=4, padx=8, sticky="w")
 
         cols = (
             "id",
@@ -249,12 +303,9 @@ class AdminLocalClient:
 
     def set_connection_state(self, is_online: bool) -> None:
         self.conn_text.set("Online" if is_online else "Offline")
-        for child in self.root.winfo_children():
-            if isinstance(child, ttk.Frame):
-                for widget in child.winfo_children():
-                    if isinstance(widget, tk.Label) and widget.cget("textvariable") == str(self.conn_text):
-                        widget.config(fg="#1f8a43" if is_online else "#dc3545")
-                        return
+        color = "#00e676" if is_online else "#dc3545"
+        if hasattr(self, "_conn_dot"):
+            self._conn_dot.config(fg=color)
 
     def sync_from_server(self, silent: bool = False) -> bool:
         base = self.base_url.get().rstrip("/")
@@ -725,9 +776,37 @@ class AdminLocalClient:
         if not path:
             messagebox.showinfo("Bill", "No bill file attached for this request.")
             return
-        base = self.base_url.get().rstrip("/") + "/"
-        bill_url = path if path.startswith("http://") or path.startswith("https://") else urljoin(base, path.lstrip("/"))
-        webbrowser.open_new_tab(bill_url)
+        base = self.base_url.get().rstrip("/")
+        # Use the authenticated session to resolve the bill URL on the server,
+        # then open the final location (R2 URL) in the browser.
+        # The browser doesn't carry the server session cookie, so we resolve here.
+        try:
+            resp = self.session.get(
+                f"{base}/requests/{req_id}/bill",
+                allow_redirects=False,
+                timeout=15,
+            )
+            if resp.status_code in (301, 302, 307, 308):
+                final_url = resp.headers.get("Location", "")
+            elif resp.status_code == 200:
+                # Local file served directly — open via session can't pass to browser easily,
+                # so open the endpoint URL (browser will prompt login if needed)
+                final_url = f"{base}/requests/{req_id}/bill"
+            else:
+                detail = ""
+                try:
+                    detail = resp.json().get("detail", "")
+                except Exception:
+                    pass
+                messagebox.showerror("Bill Error", detail or f"Server returned {resp.status_code}")
+                return
+        except Exception as exc:
+            messagebox.showerror("Bill Error", str(exc))
+            return
+        if final_url:
+            webbrowser.open_new_tab(final_url)
+        else:
+            messagebox.showerror("Bill Error", "Could not resolve bill URL.")
 
     def export_local_excel(self) -> None:
         if Workbook is None:
