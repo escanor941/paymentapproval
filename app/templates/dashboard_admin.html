@@ -1,6 +1,15 @@
 {% extends 'base.html' %}
 {% set title = 'Admin Dashboard' %}
 {% block content %}
+<div class="d-flex justify-content-end mb-2">
+    <div class="card px-3 py-2 d-flex flex-row align-items-center gap-2" style="min-width:260px">
+        <span class="fw-semibold small text-secondary">Storage:</span>
+        <span id="storageBadge" class="badge text-bg-secondary">—</span>
+        <span id="storageDetail" class="small text-muted"></span>
+        <button class="btn btn-sm btn-outline-primary ms-auto py-0" onclick="checkStorageHealth()">Check</button>
+    </div>
+</div>
+
 <div class="row g-3 mb-3">
     <div class="col-6 col-md-3 col-xl-2"><div class="card card-stat p-2"><small>New Requests</small><h5>{{ stats.new_requests }}</h5></div></div>
     <div class="col-6 col-md-3 col-xl-2"><div class="card card-stat p-2"><small>Pending</small><h5>{{ stats.pending_approval }}</h5></div></div>

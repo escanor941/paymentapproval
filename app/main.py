@@ -53,6 +53,52 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/health/storage")
+def health_storage():
+    """Admin-facing R2/local storage connectivity check."""
+    import os, time
+    from uuid import uuid4
+    backend = os.getenv("STORAGE_BACKEND", "local").lower()
+    if backend in {"s3", "r2"}:
+        try:
+            import boto3
+            from botocore.client import Config
+            endpoint   = os.getenv("S3_ENDPOINT_URL") or os.getenv("R2_ENDPOINT_URL")
+            bucket     = os.getenv("S3_BUCKET")       or os.getenv("R2_BUCKET")
+            region     = os.getenv("S3_REGION")       or os.getenv("R2_REGION") or "auto"
+            access_key = os.getenv("S3_ACCESS_KEY")   or os.getenv("R2_ACCESS_KEY")
+            secret_key = os.getenv("S3_SECRET_KEY")   or os.getenv("R2_SECRET_KEY")
+            if not all([endpoint, bucket, access_key, secret_key]):
+                return {"backend": backend, "ok": False, "error": "Missing R2/S3 env vars"}
+            s3 = boto3.client(
+                "s3",
+                endpoint_url=endpoint,
+                region_name=region,
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key,
+                config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+            )
+            probe_key = f"_health_probe/{uuid4().hex}.txt"
+            t0 = time.monotonic()
+            s3.put_object(Bucket=bucket, Key=probe_key, Body=b"ok", ContentType="text/plain")
+            s3.delete_object(Bucket=bucket, Key=probe_key)
+            latency_ms = round((time.monotonic() - t0) * 1000)
+            return {"backend": backend, "ok": True, "bucket": bucket, "latency_ms": latency_ms}
+        except Exception as exc:
+            return {"backend": backend, "ok": False, "error": str(exc)}
+    else:
+        # Local storage – just confirm the upload dir is writable
+        try:
+            from pathlib import Path
+            upload_dir = Path(os.getenv("UPLOAD_DIR", "uploads"))
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            probe = upload_dir / f"_probe_{uuid4().hex}.txt"
+            probe.write_text("ok"); probe.unlink()
+            return {"backend": "local", "ok": True, "path": str(upload_dir.resolve())}
+        except Exception as exc:
+            return {"backend": "local", "ok": False, "error": str(exc)}
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     auto_create_default = "false" if is_production else "true"

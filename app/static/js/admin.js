@@ -402,3 +402,32 @@ pollNotifications();
 loadRequests();
 loadSimpleBills();
 loadPresenceUsers();
+
+async function checkStorageHealth() {
+  const badge = document.getElementById('storageBadge');
+  const detail = document.getElementById('storageDetail');
+  badge.className = 'badge text-bg-secondary';
+  badge.textContent = 'Checking…';
+  detail.textContent = '';
+  try {
+    const res = await fetch('/health/storage');
+    const d = await res.json();
+    if (d.ok) {
+      badge.className = 'badge text-bg-success';
+      badge.textContent = (d.backend === 'local' ? 'Local ✓' : `R2 ✓`);
+      detail.textContent = d.latency_ms !== undefined
+        ? `${d.bucket}  ${d.latency_ms} ms`
+        : d.path || '';
+    } else {
+      badge.className = 'badge text-bg-danger';
+      badge.textContent = `${d.backend} ✗`;
+      detail.textContent = d.error || 'Unknown error';
+    }
+  } catch (e) {
+    badge.className = 'badge text-bg-danger';
+    badge.textContent = 'Error';
+    detail.textContent = e.message;
+  }
+}
+window.checkStorageHealth = checkStorageHealth;
+checkStorageHealth();
