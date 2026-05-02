@@ -1,3 +1,4 @@
+import logging
 import math
 from datetime import date, datetime, timedelta
 
@@ -10,16 +11,33 @@ from app.deps import admin_required, get_current_user
 from app.models import Factory, Payment, PurchaseRequest, User, UserPresence, Vendor
 from app.utils.audit import log_change
 from app.utils.email_notify import notify_bill_upload, notify_new_request
-from app.utils.storage import save_upload
-from app.utils.telegram_notify import telegram_bill_upload, telegram_new_request
+from app.utils.storage import delete_upload, save_upload
+from app.utils.telegram_notify import (
+    telegram_bill_upload,
+    telegram_new_request,
+    telegram_request_approved,
+)
 
 router = APIRouter(tags=["requests"])
+
+logger = logging.getLogger(__name__)
 
 
 def _compute_amounts(qty: float, rate: float, gst_percent: float) -> tuple[float, float]:
     amount = qty * rate
     final_amount = amount + (amount * gst_percent / 100)
     return round(amount, 2), round(final_amount, 2)
+
+
+def _entry_type(req: PurchaseRequest) -> str:
+    # Explicitly classify rows so admin UI can separate tabs reliably.
+    if (
+        (req.item_category or "").strip().lower() == "bill upload"
+        and (req.item_name or "").strip().lower() == "actual bill upload"
+        and (req.reason or "").strip().lower() == "actual bill uploaded via simple tab"
+    ):
+        return "simple_bill_upload"
+    return "purchase_request"
 
 def _as_dict(req: PurchaseRequest) -> dict:
     display_vendor = (req.vendor_mobile or "").strip() or (req.vendor.name if req.vendor else "")
@@ -51,6 +69,7 @@ def _as_dict(req: PurchaseRequest) -> dict:
         "approval_status": req.approval_status,
         "approved_amount": req.approved_amount,
         "approval_remark": req.approval_remark,
+        "entry_type": _entry_type(req),
         "priority": req.priority,
         "expected_payment_date": str(req.expected_payment_date) if req.expected_payment_date else None,
         "approved_by": req.approved_by,
@@ -64,6 +83,10 @@ def _as_dict(req: PurchaseRequest) -> dict:
 
 def _save_file(upload: UploadFile | None) -> str | None:
     return save_upload(upload)
+
+
+def _delete_file(path: str | None) -> bool:
+    return delete_upload(path)
 
 
 def _parse_factory_geo(location_text: str | None) -> tuple[float, float, float] | None:
@@ -178,6 +201,58 @@ def _notify_request_submission(
     )
 
 
+def _collect_approval_telegram_data(db: Session, req: PurchaseRequest, approved_by: User) -> dict:
+    """Collect all data needed for approval Telegram message BEFORE db.commit() expires attributes."""
+    factory_obj = db.get(Factory, req.factory_id)
+    factory_name = (factory_obj.name if factory_obj and factory_obj.name else str(req.factory_id or ""))
+
+    vendor_display = (req.vendor_mobile or "").strip()
+    if not vendor_display:
+        vendor_obj = db.get(Vendor, req.vendor_id)
+        vendor_display = (vendor_obj.name if vendor_obj and vendor_obj.name else str(req.vendor_id or ""))
+
+    amount = float(req.approved_amount if req.approved_amount is not None else (req.final_amount or 0))
+    approver_name = (
+        (approved_by.name or "").strip()
+        or (approved_by.username or "").strip()
+        or f"user#{approved_by.id}"
+    )
+    item_name = (req.item_name or "").strip() or "(No item name)"
+
+    return dict(
+        req_id=req.id,
+        factory_name=factory_name,
+        item_name=item_name,
+        vendor=vendor_display or "(No vendor)",
+        approved_amount=amount,
+        approved_by=approver_name,
+    )
+
+
+def _send_request_approval_notification(request_id: int, tg_data: dict) -> bool:
+    if not tg_data:
+        return False
+
+    try:
+        telegram_sent = telegram_request_approved(**tg_data)
+        if not telegram_sent:
+            telegram_sent = telegram_new_request(
+                req_id=tg_data["req_id"],
+                factory_name=tg_data["factory_name"],
+                item_name=tg_data["item_name"],
+                vendor=tg_data["vendor"],
+                final_amount=tg_data["approved_amount"],
+                requested_by=f"Approved by {tg_data['approved_by']}",
+                urgent=False,
+            )
+        if not telegram_sent:
+            logger.warning("Approval Telegram notification was not delivered for request %s", request_id)
+        return telegram_sent
+    except Exception:
+        logger.exception("Exception sending approval Telegram for request %s", request_id)
+        return False
+
+
 @router.post("/requests")
 def create_request(
     request_date: date = Form(...),
@@ -216,6 +291,8 @@ def create_request(
     factory_obj = db.get(Factory, factory_id)
     is_in_factory, distance_from_factory_m = _compute_presence(factory_obj, geo_latitude, geo_longitude)
 
+    uploaded_bill_path = _save_file(bill_image)
+
     req = PurchaseRequest(
         request_date=request_date,
         factory_id=factory_id,
@@ -239,27 +316,33 @@ def create_request(
         geo_captured_at=datetime.utcnow() if geo_latitude is not None and geo_longitude is not None else None,
         is_in_factory=is_in_factory,
         distance_from_factory_m=distance_from_factory_m,
-        bill_image_path=_save_file(bill_image),
+        bill_image_path=uploaded_bill_path,
         notes=notes,
         approval_status="Draft" if save_as_draft else "Pending",
         payment_status="Unpaid",
         is_unread_admin=user.role == "factory",
     )
-    db.add(req)
-    _upsert_presence(
-        db,
-        user_id=user.id,
-        factory_id=factory_id,
-        latitude=geo_latitude,
-        longitude=geo_longitude,
-        accuracy_m=geo_accuracy_m,
-        captured_at=req.geo_captured_at,
-        is_in_factory=is_in_factory,
-        distance_from_factory_m=distance_from_factory_m,
-    )
-    db.flush()
-    log_change(db, entity="purchase_request", entity_id=req.id, action="CREATE", new_value=_as_dict(req), changed_by=user.id)
-    db.commit()
+    try:
+        db.add(req)
+        _upsert_presence(
+            db,
+            user_id=user.id,
+            factory_id=factory_id,
+            latitude=geo_latitude,
+            longitude=geo_longitude,
+            accuracy_m=geo_accuracy_m,
+            captured_at=req.geo_captured_at,
+            is_in_factory=is_in_factory,
+            distance_from_factory_m=distance_from_factory_m,
+        )
+        db.flush()
+        log_change(db, entity="purchase_request", entity_id=req.id, action="CREATE", new_value=_as_dict(req), changed_by=user.id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        if uploaded_bill_path:
+            _delete_file(uploaded_bill_path)
+        raise HTTPException(500, f"Failed to save request: {exc}") from exc
 
     telegram_sent = True
     if req.approval_status != "Draft":
@@ -298,10 +381,6 @@ def create_simple_bill_upload(
     if not clean_vendor_name:
         raise HTTPException(400, "Vendor name is required")
 
-    bill_path = _save_file(bill_image)
-    if not bill_path:
-        raise HTTPException(400, "Actual bill image is required")
-
     default_factory = None
     if factory_id:
         default_factory = db.scalar(
@@ -318,6 +397,10 @@ def create_simple_bill_upload(
         raise HTTPException(400, "No active factory found in masters")
     if not default_vendor:
         raise HTTPException(400, "No active vendor found in masters")
+
+    bill_path = _save_file(bill_image)
+    if not bill_path:
+        raise HTTPException(400, "Actual bill image is required")
 
     is_in_factory, distance_from_factory_m = _compute_presence(default_factory, geo_latitude, geo_longitude)
 
@@ -350,28 +433,33 @@ def create_simple_bill_upload(
         payment_status="Unpaid",
         is_unread_admin=True,
     )
-    db.add(req)
-    _upsert_presence(
-        db,
-        user_id=user.id,
-        factory_id=default_factory.id,
-        latitude=geo_latitude,
-        longitude=geo_longitude,
-        accuracy_m=geo_accuracy_m,
-        captured_at=req.geo_captured_at,
-        is_in_factory=is_in_factory,
-        distance_from_factory_m=distance_from_factory_m,
-    )
-    db.flush()
-    log_change(
-        db,
-        entity="purchase_request",
-        entity_id=req.id,
-        action="CREATE_SIMPLE_BILL",
-        new_value=_as_dict(req),
-        changed_by=user.id,
-    )
-    db.commit()
+    try:
+        db.add(req)
+        _upsert_presence(
+            db,
+            user_id=user.id,
+            factory_id=default_factory.id,
+            latitude=geo_latitude,
+            longitude=geo_longitude,
+            accuracy_m=geo_accuracy_m,
+            captured_at=req.geo_captured_at,
+            is_in_factory=is_in_factory,
+            distance_from_factory_m=distance_from_factory_m,
+        )
+        db.flush()
+        log_change(
+            db,
+            entity="purchase_request",
+            entity_id=req.id,
+            action="CREATE_SIMPLE_BILL",
+            new_value=_as_dict(req),
+            changed_by=user.id,
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _delete_file(bill_path)
+        raise HTTPException(500, f"Failed to save bill upload: {exc}") from exc
 
     notify_bill_upload(
         req_id=req.id,
@@ -513,15 +601,27 @@ def update_request(
             distance_from_factory_m=req.distance_from_factory_m,
         )
 
+    old_bill_path = req.bill_image_path
+    new_bill_path: str | None = None
     if bill_image:
-        req.bill_image_path = _save_file(bill_image)
+        new_bill_path = _save_file(bill_image)
+        req.bill_image_path = new_bill_path
 
     if user.role == "factory":
         req.approval_status = "Draft" if save_as_draft else "Pending"
         req.is_unread_admin = not save_as_draft
 
     log_change(db, entity="purchase_request", entity_id=req.id, action="UPDATE", old_value=old, new_value=_as_dict(req), changed_by=user.id)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        if new_bill_path:
+            _delete_file(new_bill_path)
+        raise HTTPException(500, f"Failed to update request: {exc}") from exc
+
+    if new_bill_path and old_bill_path and old_bill_path != new_bill_path:
+        _delete_file(old_bill_path)
 
     telegram_sent = True
     if user.role == "factory" and req.approval_status == "Pending" and old_status != "Pending":
@@ -718,6 +818,7 @@ def approve_request(
 
     old = _as_dict(req)
     req.approval_status = "Approved"
+    req.payment_status = "Paid"
     req.approved_amount = approved_amount
     req.approval_remark = remarks
     req.priority = priority
@@ -727,8 +828,15 @@ def approve_request(
     req.is_unread_admin = False
 
     log_change(db, entity="purchase_request", entity_id=req.id, action="APPROVE", old_value=old, new_value=_as_dict(req), changed_by=user.id)
+    try:
+        tg_data = _collect_approval_telegram_data(db, req, user)
+    except Exception:
+        logger.exception("Failed to collect approval Telegram data for request %s", req.id)
+        tg_data = None
     db.commit()
-    return {"message": "Approved"}
+    telegram_sent = _send_request_approval_notification(request_id, tg_data)
+    message = "Approved" if telegram_sent else "Approved, but Telegram notification failed"
+    return {"message": message}
 
 
 @router.post("/requests/{request_id}/reject")

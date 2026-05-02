@@ -1,4 +1,5 @@
 import os
+import json
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
@@ -81,6 +82,21 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pending_uploads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                op_type TEXT NOT NULL,
+                method TEXT NOT NULL,
+                endpoint TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                file_path TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         # Seed defaults so dropdowns are populated before first login
         defaults = {
             "factories":  ["Main Factory"],
@@ -100,11 +116,14 @@ def init_db() -> None:
 class FactoryLocalClient:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("EMD Factory Panel")
-        self.root.geometry("1200x700")
+        self.root.title("EMD Group — Factory Panel")
+        self.root.geometry("1280x740")
+        self._apply_theme()
 
         self.session = req_lib.Session()
         self.base_url = tk.StringVar(value=DEFAULT_BASE_URL)
+        # Lock base_url — factory panel always connects to the cloud server
+        self.base_url.trace_add("write", lambda *_: self.base_url.set(DEFAULT_BASE_URL))
         self.username = tk.StringVar(value="")
         self.password = tk.StringVar(value="")
         self.status_text = tk.StringVar(value="Not logged in")
@@ -149,31 +168,202 @@ class FactoryLocalClient:
         self._load_my_requests_from_cache()
         self._schedule_sync()
 
+    def _should_retry_response(self, status_code: int) -> bool:
+        # Retry only transient/server-side failures.
+        return status_code in (408, 425, 429, 500, 502, 503, 504)
+
+    def _enqueue_pending_upload(self, op_type: str, method: str, endpoint: str,
+                                data: dict[str, str], file_path: str | None,
+                                reason: str) -> None:
+        safe_file = (file_path or "").strip()
+        if safe_file and not Path(safe_file).exists():
+            safe_file = ""
+        now = datetime.now().isoformat(timespec="seconds")
+        with sqlite3.connect(db_path()) as conn:
+            conn.execute(
+                """
+                INSERT INTO pending_uploads (op_type, method, endpoint, data_json, file_path, retry_count, last_error, created_at)
+                VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (op_type, method, endpoint, json.dumps(data), safe_file or None, reason[:500], now),
+            )
+            conn.commit()
+
+    def _count_pending_uploads(self) -> int:
+        with sqlite3.connect(db_path()) as conn:
+            row = conn.execute("SELECT COUNT(*) FROM pending_uploads").fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def _retry_pending_uploads(self) -> None:
+        if not self.logged_in:
+            return
+        try:
+            base = self._server_url()
+        except RuntimeError:
+            return
+
+        with sqlite3.connect(db_path()) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, method, endpoint, data_json, file_path, retry_count
+                FROM pending_uploads
+                ORDER BY id ASC
+                """
+            ).fetchall()
+
+        if not rows:
+            return
+
+        success_count = 0
+        for row in rows:
+            queue_id = int(row[0])
+            method = (row[1] or "POST").upper()
+            endpoint = (row[2] or "").strip()
+            data_json = row[3] or "{}"
+            file_path = (row[4] or "").strip()
+            retry_count = int(row[5] or 0)
+
+            try:
+                data = json.loads(data_json)
+            except Exception:
+                data = {}
+
+            files = None
+            file_handle = None
+            if file_path:
+                if not Path(file_path).exists():
+                    with sqlite3.connect(db_path()) as conn:
+                        conn.execute("UPDATE pending_uploads SET retry_count=?, last_error=? WHERE id=?",
+                                     (retry_count + 1, "Queued file not found on disk", queue_id))
+                        conn.commit()
+                    continue
+                try:
+                    file_handle = open(file_path, "rb")
+                    files = {"bill_image": file_handle}
+                except Exception as exc:
+                    with sqlite3.connect(db_path()) as conn:
+                        conn.execute("UPDATE pending_uploads SET retry_count=?, last_error=? WHERE id=?",
+                                     (retry_count + 1, f"File open failed: {exc}", queue_id))
+                        conn.commit()
+                    continue
+
+            try:
+                resp = self.session.request(method, f"{base}{endpoint}", data=data, files=files, timeout=30)
+                if resp.status_code == 200:
+                    with sqlite3.connect(db_path()) as conn:
+                        conn.execute("DELETE FROM pending_uploads WHERE id=?", (queue_id,))
+                        conn.commit()
+                    success_count += 1
+                else:
+                    detail = f"HTTP {resp.status_code}"
+                    if self._should_retry_response(resp.status_code):
+                        with sqlite3.connect(db_path()) as conn:
+                            conn.execute("UPDATE pending_uploads SET retry_count=?, last_error=? WHERE id=?",
+                                         (retry_count + 1, detail, queue_id))
+                            conn.commit()
+                    else:
+                        # Keep queued and keep retrying until success as requested.
+                        with sqlite3.connect(db_path()) as conn:
+                            conn.execute("UPDATE pending_uploads SET retry_count=?, last_error=? WHERE id=?",
+                                         (retry_count + 1, detail, queue_id))
+                            conn.commit()
+            except Exception as exc:
+                with sqlite3.connect(db_path()) as conn:
+                    conn.execute("UPDATE pending_uploads SET retry_count=?, last_error=? WHERE id=?",
+                                 (retry_count + 1, str(exc)[:500], queue_id))
+                    conn.commit()
+            finally:
+                if file_handle is not None:
+                    file_handle.close()
+
+        pending_left = self._count_pending_uploads()
+        if success_count > 0:
+            self.status_text.set(f"Retried uploads: {success_count} sent, {pending_left} pending")
+            self.sync_from_server(silent=True)
+
+    def _apply_theme(self) -> None:
+        BG, PRIMARY, WHITE = "#f0f4f8", "#1a3a6e", "#ffffff"
+        style = ttk.Style(self.root)
+        style.theme_use("clam")
+        self.root.configure(bg=BG)
+        style.configure(".", background=BG, font=("Segoe UI", 10))
+        style.configure("TFrame", background=BG)
+        style.configure("TLabel", background=BG, font=("Segoe UI", 10))
+        style.configure("TLabelframe", background=BG)
+        style.configure("TLabelframe.Label", background=BG, font=("Segoe UI", 10, "bold"), foreground=PRIMARY)
+        style.configure("TNotebook", background=BG, tabmargins=[2, 5, 2, 0])
+        style.configure("TNotebook.Tab", background="#c9d6e8", foreground=PRIMARY,
+                        font=("Segoe UI", 10, "bold"), padding=[14, 6])
+        style.map("TNotebook.Tab", background=[("selected", PRIMARY)], foreground=[("selected", WHITE)])
+        style.configure("Treeview", background=WHITE, fieldbackground=WHITE,
+                        font=("Segoe UI", 10), rowheight=28)
+        style.configure("Treeview.Heading", background=PRIMARY, foreground=WHITE,
+                        font=("Segoe UI", 10, "bold"), relief="flat")
+        style.map("Treeview", background=[("selected", "#2563a8")], foreground=[("selected", WHITE)])
+        style.configure("TEntry", fieldbackground=WHITE, font=("Segoe UI", 10), padding=4)
+        style.configure("TCombobox", fieldbackground=WHITE, font=("Segoe UI", 10))
+        style.configure("TCheckbutton", background=BG, font=("Segoe UI", 10))
+        style.configure("TScrollbar", background="#c9d6e8", troughcolor="#e0e8f0", relief="flat")
+
+    def _draw_emd_logo(self, canvas: tk.Canvas) -> None:
+        canvas.create_rectangle(0, 0, 190, 65, fill="#1a3a6e", outline="")
+        canvas.create_text(95, 20, text="EMD", fill="white", font=("Segoe UI", 22, "bold"), anchor="center")
+        canvas.create_line(18, 32, 68, 32, fill="#c8102e", width=2)
+        canvas.create_line(122, 32, 172, 32, fill="#c8102e", width=2)
+        canvas.create_text(95, 44, text="Group", fill="white", font=("Segoe UI", 12, "bold"), anchor="center")
+        canvas.create_rectangle(0, 55, 190, 65, fill="#c8102e", outline="")
+        canvas.create_text(95, 60, text="Scaffolding & Form Work", fill="white", font=("Segoe UI", 7), anchor="center")
+
     def _build_ui(self) -> None:
-        top = ttk.Frame(self.root, padding=(10, 6))
-        top.pack(fill="x")
-        ttk.Label(top, text="Server URL").grid(row=0, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self.base_url, width=40).grid(row=1, column=0, padx=(0, 8), sticky="w")
-        ttk.Label(top, text="Username").grid(row=0, column=1, sticky="w")
-        ttk.Entry(top, textvariable=self.username, width=18).grid(row=1, column=1, padx=(0, 8), sticky="w")
-        ttk.Label(top, text="Password").grid(row=0, column=2, sticky="w")
-        ttk.Entry(top, textvariable=self.password, show="*", width=18).grid(row=1, column=2, padx=(0, 8), sticky="w")
-        ttk.Button(top, text="Login", command=self.login).grid(row=1, column=3, padx=(0, 6))
-        ttk.Button(top, text="Sync", command=self.sync_from_server).grid(row=1, column=4, padx=(0, 6))
-        ttk.Label(top, textvariable=self.status_text, foreground="#0b5ed7").grid(
-            row=2, column=0, columnspan=4, pady=(6, 0), sticky="w")
-        tk.Label(top, textvariable=self.conn_text, fg="#dc3545", font=("Segoe UI", 10, "bold")).grid(
-            row=2, column=4, pady=(6, 0), sticky="w")
-        ttk.Checkbutton(top, text="Auto Sync (30s)", variable=self.auto_sync_enabled).grid(
-            row=2, column=5, pady=(6, 0), padx=8, sticky="w")
+        # ── Header bar ──────────────────────────────────────────────────────
+        hdr = tk.Frame(self.root, bg="#1a3a6e", height=75)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        logo_c = tk.Canvas(hdr, width=190, height=65, bg="#1a3a6e", highlightthickness=0)
+        logo_c.pack(side="left", padx=(12, 0), pady=5)
+        self._draw_emd_logo(logo_c)
+        title_f = tk.Frame(hdr, bg="#1a3a6e")
+        title_f.pack(side="left", padx=14, pady=10)
+        tk.Label(title_f, text="Factory Panel", bg="#1a3a6e", fg="white",
+                 font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        tk.Label(title_f, text="Purchase Request Submission  —  Site / Factory",
+                 bg="#1a3a6e", fg="#a8c4e0", font=("Segoe UI", 9)).pack(anchor="w")
+        right_hdr = tk.Frame(hdr, bg="#1a3a6e")
+        right_hdr.pack(side="right", padx=14)
+        self._conn_dot = tk.Label(right_hdr, text="●", bg="#1a3a6e", fg="#dc3545", font=("Segoe UI", 16))
+        self._conn_dot.pack(side="right", padx=(4, 0))
+        tk.Label(right_hdr, textvariable=self.conn_text, bg="#1a3a6e", fg="white",
+                 font=("Segoe UI", 10, "bold")).pack(side="right")
+        tk.Label(right_hdr, text=DEFAULT_BASE_URL, bg="#1a3a6e", fg="#7bafd4",
+                 font=("Segoe UI", 7)).pack(side="right", padx=(0, 10))
+
+        # ── Connection / login bar ─────────────────────────────────────────
+        login_bar = ttk.Frame(self.root, padding=(8, 6, 8, 2))
+        login_bar.pack(fill="x")
+        ttk.Label(login_bar, text="Username").grid(row=0, column=0, sticky="w")
+        ttk.Entry(login_bar, textvariable=self.username, width=20).grid(row=1, column=0, padx=(0, 8), sticky="w")
+        ttk.Label(login_bar, text="Password").grid(row=0, column=1, sticky="w")
+        ttk.Entry(login_bar, textvariable=self.password, show="*", width=20).grid(row=1, column=1, padx=(0, 8), sticky="w")
+
+        def _hbtn(parent, text, cmd, bg="#1a3a6e"):
+            return tk.Button(parent, text=text, command=cmd, bg=bg, fg="white",
+                             font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
+                             padx=10, pady=5, activebackground="#0d2a56", activeforeground="white", bd=0)
+
+        _hbtn(login_bar, "\U0001f510  Login", self.login).grid(row=1, column=2, padx=(0, 6))
+        _hbtn(login_bar, "\U0001f504  Sync",  self.sync_from_server, "#1565a0").grid(row=1, column=3, padx=(0, 6))
+        ttk.Checkbutton(login_bar, text="Auto Sync (30s)", variable=self.auto_sync_enabled).grid(
+            row=1, column=4, padx=8)
+        ttk.Label(login_bar, textvariable=self.status_text, foreground="#1a3a6e",
+                  font=("Segoe UI", 9, "italic")).grid(row=1, column=5, padx=8, sticky="w")
 
         nb = ttk.Notebook(self.root)
         nb.pack(fill="both", expand=True, padx=10, pady=8)
         self.notebook = nb
         self.request_frame = ttk.Frame(nb)
         self.bill_frame = ttk.Frame(nb)
-        nb.add(self.request_frame, text="Create Request")
-        nb.add(self.bill_frame, text="Simple Bill Upload")
+        nb.add(self.request_frame, text="\U0001f4cb  Create Request")
+        nb.add(self.bill_frame, text="\U0001f9fe  Simple Bill Upload")
         self._build_request_tab()
         self._build_bill_upload_tab()
 
@@ -266,11 +456,17 @@ class FactoryLocalClient:
         r += 1
         btn_row = ttk.Frame(left)
         btn_row.grid(row=r, column=0, columnspan=4, padx=4, pady=10, sticky="w")
-        self.submit_btn = ttk.Button(btn_row, text="Submit Request", command=self.submit_request)
+
+        def _fbtn(p, t, c, bg="#1a3a6e"):
+            return tk.Button(p, text=t, command=c, bg=bg, fg="white",
+                             font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
+                             padx=10, pady=5, bd=0)
+
+        self.submit_btn = _fbtn(btn_row, "\U0001f4e4  Submit Request", self.submit_request, "#1b5e20")
         self.submit_btn.pack(side="left", padx=(0, 6))
-        self.draft_btn = ttk.Button(btn_row, text="Save Draft", command=self.save_draft)
+        self.draft_btn = _fbtn(btn_row, "\U0001f4be  Save Draft", self.save_draft, "#e65100")
         self.draft_btn.pack(side="left", padx=(0, 6))
-        ttk.Button(btn_row, text="Reset", command=self.clear_request_form).pack(side="left")
+        _fbtn(btn_row, "\U0001f504  Reset", self.clear_request_form, "#546e7a").pack(side="left")
 
         right = ttk.LabelFrame(outer, text="My Requests", padding=8)
         right.grid(row=0, column=1, sticky="nsew", pady=2)
@@ -315,9 +511,15 @@ class FactoryLocalClient:
 
         act_row = ttk.Frame(right)
         act_row.pack(fill="x", pady=(4, 0))
-        ttk.Button(act_row, text="Edit Selected", command=self.edit_selected).pack(side="left", padx=(0, 4))
-        ttk.Button(act_row, text="Delete Selected", command=self.delete_selected).pack(side="left", padx=(0, 4))
-        ttk.Button(act_row, text="View Bill", command=self.view_bill_selected).pack(side="left")
+
+        def _abtn(p, t, c, bg="#1a3a6e"):
+            return tk.Button(p, text=t, command=c, bg=bg, fg="white",
+                             font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
+                             padx=8, pady=4, bd=0)
+
+        _abtn(act_row, "\u270f  Edit",   self.edit_selected).pack(side="left", padx=(0, 4))
+        _abtn(act_row, "\U0001f5d1  Delete", self.delete_selected, "#b71c1c").pack(side="left", padx=(0, 4))
+        _abtn(act_row, "\U0001f9fe  View Bill", self.view_bill_selected, "#1565a0").pack(side="left")
 
     def _build_bill_upload_tab(self) -> None:
         frame = ttk.LabelFrame(self.bill_frame, text="Upload Actual Bill (Quick)", padding=14)
@@ -348,9 +550,13 @@ class FactoryLocalClient:
         r += 1
         btn_row = ttk.Frame(frame)
         btn_row.grid(row=r, column=0, columnspan=3, padx=6, pady=10, sticky="w")
-        self.bill_btn = ttk.Button(btn_row, text="Upload Bill", command=self.submit_bill_upload)
+        self.bill_btn = tk.Button(btn_row, text="\U0001f4e4  Upload Bill", command=self.submit_bill_upload,
+                                  bg="#1b5e20", fg="white", font=("Segoe UI", 9, "bold"),
+                                  relief="flat", cursor="hand2", padx=10, pady=5, bd=0)
         self.bill_btn.pack(side="left", padx=(0, 6))
-        ttk.Button(btn_row, text="Reset", command=self._reset_bill_form).pack(side="left")
+        tk.Button(btn_row, text="\U0001f504  Reset", command=self._reset_bill_form,
+                  bg="#546e7a", fg="white", font=("Segoe UI", 9, "bold"),
+                  relief="flat", cursor="hand2", padx=10, pady=5, bd=0).pack(side="left")
 
     def _recalculate(self, *_) -> None:
         try:
@@ -405,7 +611,7 @@ class FactoryLocalClient:
         self.bill_status_var.set("")
 
     def login(self) -> None:
-        base = self.base_url.get().rstrip("/")
+        base = DEFAULT_BASE_URL.rstrip("/")
         try:
             r = self.session.post(f"{base}/login",
                 data={"username": self.username.get(), "password": self.password.get()},
@@ -425,17 +631,21 @@ class FactoryLocalClient:
             self._set_conn(False)
             messagebox.showerror("Login", f"Error: {exc}")
 
+    def _server_url(self) -> str:
+        """Always returns the locked cloud server URL. Raises if something is wrong."""
+        url = DEFAULT_BASE_URL.rstrip("/")
+        if not url.startswith("https://"):
+            raise RuntimeError(f"Refusing to submit: server URL must be HTTPS (got {url!r})")
+        return url
+
     def _set_conn(self, online: bool) -> None:
         self.conn_text.set("Online" if online else "Offline")
-        for child in self.root.winfo_children():
-            if isinstance(child, ttk.Frame):
-                for w in child.winfo_children():
-                    if isinstance(w, tk.Label) and w.cget("textvariable") == str(self.conn_text):
-                        w.config(fg="#1f8a43" if online else "#dc3545")
-                        return
+        color = "#00e676" if online else "#dc3545"
+        if hasattr(self, "_conn_dot"):
+            self._conn_dot.config(fg=color)
 
     def _load_masters(self) -> None:
-        base = self.base_url.get().rstrip("/")
+        base = DEFAULT_BASE_URL.rstrip("/")
         try:
             for mtype in ("factories", "vendors", "categories", "units"):
                 r = self.session.get(f"{base}/masters/{mtype}", timeout=15)
@@ -480,7 +690,7 @@ class FactoryLocalClient:
                 self.f_unit.set(units[0])
 
     def sync_from_server(self, silent: bool = False) -> None:
-        base = self.base_url.get().rstrip("/")
+        base = DEFAULT_BASE_URL.rstrip("/")
         try:
             r = self.session.get(f"{base}/requests", timeout=30)
             if r.status_code != 200:
@@ -612,6 +822,11 @@ class FactoryLocalClient:
             messagebox.showerror("Error", "Please login first.")
             return
         try:
+            base = self._server_url()
+        except RuntimeError as exc:
+            messagebox.showerror("Security Error", str(exc))
+            return
+        try:
             datetime.strptime(self.f_date.get().strip(), "%Y-%m-%d")
         except ValueError:
             self._req_status("Date must be YYYY-MM-DD", error=True)
@@ -643,7 +858,6 @@ class FactoryLocalClient:
 
         amount = round(qty * rate, 2)
         final = round(amount + amount * gst / 100, 2)
-        base = self.base_url.get().rstrip("/")
         data = {
             "request_date": self.f_date.get().strip(),
             "factory_id": str(self.f_factory_id.get()),
@@ -673,13 +887,22 @@ class FactoryLocalClient:
                 detail = body.get("detail", f"HTTP {r.status_code}")
                 if isinstance(detail, list):
                     detail = detail[0].get("msg", str(detail))
-                self._req_status(str(detail), error=True)
+                if self._should_retry_response(r.status_code):
+                    endpoint = f"/requests/{self.edit_request_id}" if self.edit_request_id else "/requests"
+                    self._enqueue_pending_upload("request", method, endpoint, data, bill_path or None, str(detail))
+                    self._req_status("Offline queue: request saved locally and will retry automatically.", error=False)
+                    self.clear_request_form()
+                else:
+                    self._req_status(str(detail), error=True)
             else:
                 self._req_status(f"✓ {body.get('message', 'Saved!')}", error=False)
                 self.clear_request_form()
                 self.sync_from_server(silent=True)
         except Exception as exc:
-            self._req_status(f"Failed: {exc}", error=True)
+            endpoint = f"/requests/{self.edit_request_id}" if self.edit_request_id else "/requests"
+            self._enqueue_pending_upload("request", method, endpoint, data, bill_path or None, str(exc))
+            self._req_status("Offline queue: request saved locally and will retry automatically.", error=False)
+            self.clear_request_form()
         finally:
             if "bill_image" in files:
                 files["bill_image"].close()
@@ -742,7 +965,7 @@ class FactoryLocalClient:
             return
         if not self.logged_in:
             messagebox.showerror("Error", "Login first."); return
-        base = self.base_url.get().rstrip("/")
+        base = DEFAULT_BASE_URL.rstrip("/")
         try:
             r = self.session.delete(f"{base}/requests/{req_id}", timeout=20)
             body = r.json() if r.headers.get("Content-Type", "").startswith("application/json") else {}
@@ -768,13 +991,17 @@ class FactoryLocalClient:
         path = (self.bill_paths.get(req_id) or "").strip()
         if not path:
             messagebox.showinfo("Bill", "No bill attached for this request."); return
-        base = self.base_url.get().rstrip("/") + "/"
+        base = DEFAULT_BASE_URL.rstrip("/") + "/"
         bill_url = path if path.startswith("http") else urljoin(base, path.lstrip("/"))
         webbrowser.open_new_tab(bill_url)
 
     def submit_bill_upload(self) -> None:
         if not self.logged_in:
             messagebox.showerror("Error", "Please login first."); return
+        try:
+            base = self._server_url()
+        except RuntimeError as exc:
+            messagebox.showerror("Security Error", str(exc)); return
         vendor_name = self.b_vendor_name.get().strip()
         if not vendor_name:
             self._bill_status("Vendor name is required.", error=True); return
@@ -782,7 +1009,6 @@ class FactoryLocalClient:
         if not bill_path or not Path(bill_path).exists():
             self._bill_status("Select a valid bill file.", error=True); return
         factory_id = self.b_factory_id.get()
-        base = self.base_url.get().rstrip("/")
         data = {"vendor_name": vendor_name}
         if factory_id > 0:
             data["factory_id"] = str(factory_id)
@@ -794,13 +1020,23 @@ class FactoryLocalClient:
                                       files={"bill_image": f}, timeout=30)
             body = r.json() if r.headers.get("Content-Type", "").startswith("application/json") else {}
             if r.status_code != 200:
-                self._bill_status(str(body.get("detail", f"HTTP {r.status_code}")), error=True)
+                detail = str(body.get("detail", f"HTTP {r.status_code}"))
+                if self._should_retry_response(r.status_code):
+                    self._enqueue_pending_upload("simple_bill", "POST", "/requests/simple-bill", data, bill_path, detail)
+                    self._bill_status("Offline queue: bill saved locally and will retry automatically.", error=False)
+                    self._reset_bill_form()
+                else:
+                    self._bill_status(detail, error=True)
             else:
-                self._bill_status(f"✓ {body.get('message', 'Uploaded!')}", error=False)
+                success_message = body.get("message", "Uploaded!")
+                self._bill_status(f"✓ {success_message}", error=False)
+                messagebox.showinfo("Success", success_message)
                 self._reset_bill_form()
                 self.sync_from_server(silent=True)
         except Exception as exc:
-            self._bill_status(f"Failed: {exc}", error=True)
+            self._enqueue_pending_upload("simple_bill", "POST", "/requests/simple-bill", data, bill_path, str(exc))
+            self._bill_status("Offline queue: bill saved locally and will retry automatically.", error=False)
+            self._reset_bill_form()
         finally:
             self.bill_btn.config(state="normal")
 
@@ -824,8 +1060,10 @@ class FactoryLocalClient:
         self.bill_status_label.configure(foreground="#b02a37" if error else "#1f8a43")
 
     def _schedule_sync(self) -> None:
-        if self.auto_sync_enabled.get() and self.logged_in:
-            self.sync_from_server(silent=True)
+        if self.logged_in:
+            self._retry_pending_uploads()
+            if self.auto_sync_enabled.get():
+                self.sync_from_server(silent=True)
         self.root.after(30000, self._schedule_sync)
 
 

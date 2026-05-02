@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from urllib.parse import urljoin
 import webbrowser
 
@@ -86,6 +86,8 @@ class AdminLocalClient:
         self.session = requests.Session()
 
         self.base_url = tk.StringVar(value=DEFAULT_BASE_URL)
+        # Lock base_url — admin panel always connects to the cloud server
+        self.base_url.trace_add("write", lambda *_: self.base_url.set(DEFAULT_BASE_URL))
         self.username = tk.StringVar(value="admin")
         self.password = tk.StringVar(value="admin123")
         self.status_text = tk.StringVar(value="Not logged in")
@@ -109,9 +111,12 @@ class AdminLocalClient:
         self.preview_req_id: int | None = None
         self.preview_filename = ""
         self._last_bill_url_by_req: dict[int, str] = {}
+        self._viewed_ids: set[int] = set()
+
+        self._last_server_items: list[dict] = []
 
         self._build_ui()
-        self.load_local_cache()
+        self.status_text.set("Please login to load data from server")
         self.schedule_auto_sync()
 
     def _apply_theme(self) -> None:
@@ -184,20 +189,19 @@ class AdminLocalClient:
         _btn(toolbar, "\u2705  Approve",           self.approve_selected, "#1b5e20").pack(side="left", padx=4)
         _btn(toolbar, "\u274c  Reject",            self.reject_selected, "#b71c1c").pack(side="left", padx=4)
         _btn(toolbar, "\u23f8  Hold",              self.hold_selected, "#e65100").pack(side="left", padx=4)
+        _btn(toolbar, "\U0001f5d1  Delete",        self.delete_selected, "#7f1d1d").pack(side="left", padx=4)
         _btn(toolbar, "\U0001f4ca  Export Excel",  self.export_local_excel, "#4a148c").pack(side="left", padx=4)
 
         # ── Login / connection bar ───────────────────────────────────────────
         login_bar = ttk.Frame(self.root, padding=(8, 4, 8, 2))
         login_bar.pack(fill="x")
-        ttk.Label(login_bar, text="Server URL").grid(row=0, column=0, sticky="w")
-        ttk.Entry(login_bar, textvariable=self.base_url, width=42, state="readonly").grid(row=1, column=0, padx=(0, 8), sticky="w")
-        ttk.Label(login_bar, text="Username").grid(row=0, column=1, sticky="w")
-        ttk.Entry(login_bar, textvariable=self.username, width=16).grid(row=1, column=1, padx=(0, 8), sticky="w")
-        ttk.Label(login_bar, text="Password").grid(row=0, column=2, sticky="w")
-        ttk.Entry(login_bar, textvariable=self.password, show="*", width=16).grid(row=1, column=2, padx=(0, 8), sticky="w")
-        ttk.Checkbutton(login_bar, text="Auto Sync (10s)", variable=self.auto_sync_enabled).grid(row=1, column=3, padx=8)
+        ttk.Label(login_bar, text="Username").grid(row=0, column=0, sticky="w")
+        ttk.Entry(login_bar, textvariable=self.username, width=20).grid(row=1, column=0, padx=(0, 8), sticky="w")
+        ttk.Label(login_bar, text="Password").grid(row=0, column=1, sticky="w")
+        ttk.Entry(login_bar, textvariable=self.password, show="*", width=20).grid(row=1, column=1, padx=(0, 8), sticky="w")
+        ttk.Checkbutton(login_bar, text="Auto Sync (10s)", variable=self.auto_sync_enabled).grid(row=1, column=2, padx=8)
         ttk.Label(login_bar, textvariable=self.status_text, foreground="#1a3a6e",
-                  font=("Segoe UI", 9, "italic")).grid(row=1, column=4, padx=8, sticky="w")
+                  font=("Segoe UI", 9, "italic")).grid(row=1, column=3, padx=8, sticky="w")
 
         cols = (
             "id",
@@ -319,8 +323,14 @@ class AdminLocalClient:
         self.factory_tree.pack(side="left", fill="both", expand=True)
         loc_vs.pack(side="right", fill="y")
 
+    def _server_url(self) -> str:
+        url = DEFAULT_BASE_URL.rstrip("/")
+        if not url.startswith("https://"):
+            raise RuntimeError(f"Server URL must be HTTPS (got {url!r})")
+        return url
+
     def login(self) -> None:
-        base = self.base_url.get().rstrip("/")
+        base = DEFAULT_BASE_URL.rstrip("/")
         try:
             response = self.session.post(
                 f"{base}/login",
@@ -351,7 +361,7 @@ class AdminLocalClient:
             self._conn_dot.config(fg=color)
 
     def sync_from_server(self, silent: bool = False) -> bool:
-        base = self.base_url.get().rstrip("/")
+        base = DEFAULT_BASE_URL.rstrip("/")
         try:
             response = self.session.get(f"{base}/requests", timeout=30)
             if response.status_code != 200:
@@ -361,8 +371,8 @@ class AdminLocalClient:
                 return False
             data = response.json()
             items = data.get("items", [])
-            self.save_requests_to_db(items)
-            self.load_local_cache()
+            self._last_server_items = items
+            self._populate_from_server_items(items)
             self.load_factory_locations(silent=True)
             self.set_connection_state(True)
             self.status_text.set(f"Synced {len(items)} requests at {datetime.now().strftime('%H:%M:%S')}")
@@ -378,58 +388,23 @@ class AdminLocalClient:
             self.sync_from_server(silent=True)
         self.root.after(10000, self.schedule_auto_sync)
 
-    def save_requests_to_db(self, items: list[dict]) -> None:
-        now = datetime.now().isoformat(timespec="seconds")
-        with sqlite3.connect(db_path()) as conn:
-            for it in items:
-                conn.execute(
-                    """
-                    INSERT INTO requests_cache (
-                        id, request_date, factory_id, item_category, vendor, item_name, qty, unit, final_amount,
-                        requested_by, approval_status, payment_status, bill_image_path, updated_at, raw_json, synced_at, viewed_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                        (SELECT viewed_at FROM requests_cache WHERE id = ?))
-                    ON CONFLICT(id) DO UPDATE SET
-                        request_date=excluded.request_date,
-                        factory_id=excluded.factory_id,
-                        item_category=excluded.item_category,
-                        vendor=excluded.vendor,
-                        item_name=excluded.item_name,
-                        qty=excluded.qty,
-                        unit=excluded.unit,
-                        final_amount=excluded.final_amount,
-                        requested_by=excluded.requested_by,
-                        approval_status=excluded.approval_status,
-                        payment_status=excluded.payment_status,
-                        bill_image_path=excluded.bill_image_path,
-                        updated_at=excluded.updated_at,
-                        raw_json=excluded.raw_json,
-                        synced_at=excluded.synced_at
-                    """,
-                    (
-                        it.get("id"),
-                        it.get("request_date"),
-                        it.get("factory_id"),
-                        it.get("item_category"),
-                        it.get("vendor"),
-                        it.get("item_name"),
-                        it.get("qty"),
-                        it.get("unit"),
-                        it.get("final_amount"),
-                        it.get("requested_by"),
-                        it.get("approval_status"),
-                        it.get("payment_status"),
-                        it.get("bill_image_path"),
-                        it.get("updated_at"),
-                        str(it),
-                        now,
-                        it.get("id"),
-                    ),
-                )
-            conn.commit()
+    def _is_simple_bill_upload_item(self, item: dict) -> bool:
+        entry_type = (item.get("entry_type") or "").strip().lower()
+        if entry_type:
+            return entry_type == "simple_bill_upload"
 
-    def load_local_cache(self) -> None:
+        # Fallback for older server payloads that don't include entry_type.
+        item_category = (item.get("item_category") or "").strip().lower()
+        item_name = (item.get("item_name") or "").strip().lower()
+        reason = (item.get("reason") or "").strip().lower()
+        return (
+            item_category == "bill upload"
+            and item_name == "actual bill upload"
+            and reason == "actual bill uploaded via simple tab"
+        )
+
+    def _populate_from_server_items(self, items: list[dict]) -> None:
+        """Populate the treeviews directly from server-fetched items. Never reads display data from SQLite."""
         self.bill_paths.clear()
         for row in self.tree.get_children():
             self.tree.delete(row)
@@ -441,44 +416,40 @@ class AdminLocalClient:
         first_new_request_added = False
         first_new_bill_added = False
 
-        with sqlite3.connect(db_path()) as conn:
-            rows = conn.execute(
-                """
-                SELECT id, request_date, factory_id, item_category, vendor, item_name,
-                       final_amount, requested_by, approval_status, payment_status, updated_at, bill_image_path, viewed_at
-                FROM requests_cache
-                ORDER BY id DESC
-                """
-            ).fetchall()
+        for it in items:
+            req_id = int(it.get("id", 0))
+            is_simple_bill = self._is_simple_bill_upload_item(it)
+            self.bill_paths[req_id] = it.get("bill_image_path") or ""
+            is_new = req_id not in self._viewed_ids
 
-        for r in rows:
-            item_category = (r[3] or "").strip()
-            req_row_values = (r[0], r[1], r[2], r[4], r[5], r[6], r[7], r[8], r[9], r[10])
-            bill_row_values = (r[0], r[1], r[2], r[4], r[7], r[8], r[10])
-            req_id = int(r[0])
-            self.bill_paths[req_id] = r[11] or ""
-            is_new = r[12] is None  # viewed_at is None means not yet viewed
-            
-            if item_category.lower() == "bill upload":
-                # Only apply red tag to the first (most recent) new bill
+            req_row_values = (req_id, it.get("request_date"), it.get("factory_id"),
+                              it.get("vendor"), it.get("item_name"), it.get("final_amount"),
+                              it.get("requested_by"), it.get("approval_status"),
+                              it.get("payment_status"), it.get("updated_at"))
+            bill_row_values = (req_id, it.get("request_date"), it.get("factory_id"),
+                               it.get("vendor"), it.get("requested_by"),
+                               it.get("approval_status"), it.get("updated_at"))
+
+            if is_simple_bill:
                 tag = "new_bill" if (is_new and not first_new_bill_added) else ""
                 self.bill_tree.insert("", "end", values=bill_row_values, tags=(tag,) if tag else ())
                 if is_new:
                     new_bill_count += 1
-                    if not first_new_bill_added:
-                        first_new_bill_added = True
+                    first_new_bill_added = True
             else:
-                # Only apply red tag to the first (most recent) new request
                 tag = "new_request" if (is_new and not first_new_request_added) else ""
                 self.tree.insert("", "end", values=req_row_values, tags=(tag,) if tag else ())
                 if is_new:
                     new_req_count += 1
-                    if not first_new_request_added:
-                        first_new_request_added = True
+                    first_new_request_added = True
 
         self.new_requests_count = new_req_count
         self.new_bills_count = new_bill_count
         self._update_tab_labels()
+
+    # kept for compatibility but no longer used for display — only viewed_at is written to SQLite
+    def save_requests_to_db(self, items: list[dict]) -> None:
+        pass
 
     def _update_tab_labels(self) -> None:
         """Update tab labels with notification badges."""
@@ -490,15 +461,9 @@ class AdminLocalClient:
         self.notebook.tab(self.bills_frame, text=bill_label)
 
     def _mark_item_as_viewed(self, req_id: int) -> None:
-        """Mark an item as viewed in the database."""
-        now = datetime.now().isoformat(timespec="seconds")
-        with sqlite3.connect(db_path()) as conn:
-            conn.execute(
-                "UPDATE requests_cache SET viewed_at = ? WHERE id = ?",
-                (now, req_id)
-            )
-            conn.commit()
-        self.load_local_cache()
+        """Track viewed IDs in-memory only and refresh the current server-backed view."""
+        self._viewed_ids.add(int(req_id))
+        self._populate_from_server_items(self._last_server_items)
 
     def _preview_location(self, location: str) -> str:
         parsed = self._parse_location_text(location)
@@ -530,7 +495,7 @@ class AdminLocalClient:
         return f"Lat {lat:.6f}, Lon {lon:.6f}, Radius {radius:.0f}m"
 
     def load_factory_locations(self, silent: bool = False) -> None:
-        base = self.base_url.get().rstrip("/")
+        base = DEFAULT_BASE_URL.rstrip("/")
         try:
             response = self.session.get(f"{base}/masters/factories", timeout=20)
             if response.status_code != 200:
@@ -595,7 +560,7 @@ class AdminLocalClient:
             "extra3": "",
         }
 
-        base = self.base_url.get().rstrip("/")
+        base = DEFAULT_BASE_URL.rstrip("/")
         try:
             response = self.session.put(
                 f"{base}/masters/factories/{factory_id}",
@@ -765,6 +730,47 @@ class AdminLocalClient:
             required=False,
         )
 
+    def _expected_delete_password(self) -> str:
+        # Optional deployment override; otherwise use the admin login password entered in this app.
+        return (os.getenv("ADMIN_DELETE_PASSWORD") or self.password.get() or "").strip()
+
+    def delete_selected(self) -> None:
+        req_id = self.selected_request_id_any()
+        if req_id is None:
+            return
+
+        if not messagebox.askyesno("Delete Entry", f"Delete entry #{req_id}? This cannot be undone."):
+            return
+
+        expected = self._expected_delete_password()
+        entered = simpledialog.askstring(
+            "Delete Password",
+            "Enter delete password to confirm:",
+            show="*",
+            parent=self.root,
+        )
+        if entered is None:
+            return
+        if not expected or entered.strip() != expected:
+            messagebox.showerror("Delete Entry", "Invalid delete password.")
+            return
+
+        base = DEFAULT_BASE_URL.rstrip("/")
+        try:
+            response = self.session.delete(f"{base}/requests/{req_id}", timeout=30)
+            body = response.json() if response.headers.get("Content-Type", "").startswith("application/json") else {}
+            if response.status_code != 200:
+                self.set_connection_state(False)
+                messagebox.showerror("Delete Entry", self._extract_error_message(body, response.status_code))
+                return
+            self.set_connection_state(True)
+            self.status_text.set(body.get("message", f"Entry #{req_id} deleted"))
+            self.sync_from_server(silent=True)
+            messagebox.showinfo("Delete Entry", body.get("message", "Deleted"))
+        except Exception as exc:
+            self.set_connection_state(False)
+            messagebox.showerror("Delete Entry", f"Delete failed: {exc}")
+
     def open_text_action_dialog(
         self,
         title: str,
@@ -880,7 +886,7 @@ class AdminLocalClient:
             messagebox.showerror("Download Bill", f"Failed to save file: {exc}")
 
     def _fetch_bill_response(self, req_id: int, stream: bool) -> tuple[requests.Response | None, str, str | None]:
-        base = self.base_url.get().rstrip("/")
+        base = DEFAULT_BASE_URL.rstrip("/")
         endpoint = f"{base}/requests/{req_id}/bill"
 
         # Prefer last known-good URL for this request, if any.
@@ -1013,24 +1019,32 @@ class AdminLocalClient:
             messagebox.showerror("Export", "openpyxl is not installed. Please rebuild environment with openpyxl.")
             return
 
-        with sqlite3.connect(db_path()) as conn:
-            rows = conn.execute(
-                """
-                SELECT id, request_date, factory_id, vendor, item_name, qty, unit,
-                       final_amount, requested_by, approval_status, payment_status,
-                       updated_at, synced_at
-                FROM requests_cache
-                ORDER BY id DESC
-                """
-            ).fetchall()
+        rows = [
+            (
+                it.get("id"),
+                it.get("request_date"),
+                it.get("factory_id"),
+                it.get("vendor"),
+                it.get("item_name"),
+                it.get("qty"),
+                it.get("unit"),
+                it.get("final_amount"),
+                it.get("requested_by"),
+                it.get("approval_status"),
+                it.get("payment_status"),
+                it.get("updated_at"),
+                datetime.now().isoformat(timespec="seconds"),
+            )
+            for it in self._last_server_items
+        ]
 
         if not rows:
-            messagebox.showwarning("Export", "No local data available to export.")
+            messagebox.showwarning("Export", "No server data available to export. Please sync first.")
             return
 
-        default_name = f"admin_local_cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        default_name = f"admin_server_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         out_file = filedialog.asksaveasfilename(
-            title="Save Local Cache Excel",
+            title="Save Server Data Excel",
             defaultextension=".xlsx",
             initialdir=str(app_data_dir()),
             initialfile=default_name,
@@ -1041,7 +1055,7 @@ class AdminLocalClient:
 
         wb = Workbook()
         ws = wb.active
-        ws.title = "Admin Local Cache"
+        ws.title = "Admin Server Data"
         headers = [
             "ID",
             "Request Date",
@@ -1062,10 +1076,10 @@ class AdminLocalClient:
             ws.append(list(row))
 
         wb.save(out_file)
-        messagebox.showinfo("Export", f"Local cache exported successfully:\n{out_file}")
+        messagebox.showinfo("Export", f"Server data exported successfully:\n{out_file}")
 
     def _perform_action(self, path: str, data: dict[str, str]) -> tuple[bool, str]:
-        base = self.base_url.get().rstrip("/")
+        base = DEFAULT_BASE_URL.rstrip("/")
         try:
             response = self.session.post(f"{base}{path}", data=data, timeout=30)
             body = response.json() if response.headers.get("Content-Type", "").startswith("application/json") else {}
@@ -1103,7 +1117,6 @@ class AdminLocalClient:
 
 
 def main() -> int:
-    init_db()
     root = tk.Tk()
     AdminLocalClient(root)
     root.mainloop()
