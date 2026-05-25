@@ -763,14 +763,6 @@ class AdminLocalClient:
             self.bill_paths[req_id] = it.get("bill_image_path") or ""
             is_new = req_id not in self._viewed_ids
 
-            req_row_values = (req_id, it.get("request_date"), it.get("factory_id"),
-                              it.get("vendor"), it.get("item_name"),
-                              f"{float(it.get('final_amount') or 0):.2f}",
-                              f"{float(it.get('total_paid') or 0):.2f}",
-                              f"{float(it.get('balance_amount') or 0):.2f}",
-                              it.get("requested_by"),
-                              approval_status,
-                              it.get("payment_status"), it.get("updated_at"))
             # Bill uploads always show "Received" — no approve/reject flow needed
             bill_row_values = (req_id, it.get("request_date"), it.get("factory_id"),
                                it.get("vendor"), it.get("requested_by"),
@@ -792,6 +784,14 @@ class AdminLocalClient:
                     approval_status = "Partial Approved"
                 if self._status_filter and approval_status != self._status_filter:
                     continue
+                req_row_values = (req_id, it.get("request_date"), it.get("factory_id"),
+                                  it.get("vendor"), it.get("item_name"),
+                                  f"{float(it.get('final_amount') or 0):.2f}",
+                                  f"{float(it.get('total_paid') or 0):.2f}",
+                                  f"{float(it.get('balance_amount') or 0):.2f}",
+                                  it.get("requested_by"),
+                                  approval_status,
+                                  it.get("payment_status"), it.get("updated_at"))
                 if is_new and not first_new_request_added:
                     row_tag = "new_request"
                 else:
