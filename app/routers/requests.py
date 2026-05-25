@@ -520,7 +520,24 @@ def list_requests(
         )
 
     rows = db.scalars(query.order_by(desc(PurchaseRequest.id))).all()
-    return {"items": [_as_dict(r) for r in rows]}
+    items = [_as_dict(r) for r in rows]
+
+    # Enrich each item with total_paid and balance_amount from the payments table
+    if items:
+        req_ids = [it["id"] for it in items]
+        paid_rows = db.execute(
+            select(Payment.request_id, func.coalesce(func.sum(Payment.paid_amount), 0).label("total_paid"))
+            .where(Payment.request_id.in_(req_ids))
+            .group_by(Payment.request_id)
+        ).all()
+        paid_map = {r.request_id: float(r.total_paid) for r in paid_rows}
+        for it in items:
+            total_paid = paid_map.get(it["id"], 0.0)
+            approved = float(it.get("approved_amount") or it.get("final_amount") or 0)
+            it["total_paid"] = total_paid
+            it["balance_amount"] = max(approved - total_paid, 0)
+
+    return {"items": items}
 
 
 @router.put("/requests/{request_id}")
@@ -879,6 +896,122 @@ def reject_request(
         except Exception:
             logger.exception("Exception sending rejection Telegram for request %s", req.id)
     return {"message": "Rejected"}
+
+
+@router.get("/requests/{request_id}/payment-summary")
+def payment_summary(
+    request_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(admin_required),
+):
+    req = db.get(PurchaseRequest, request_id)
+    if not req or req.is_deleted:
+        raise HTTPException(404, "Request not found")
+
+    payments = db.scalars(
+        select(Payment).where(Payment.request_id == request_id).order_by(Payment.id)
+    ).all()
+
+    total_paid = sum(p.paid_amount for p in payments)
+    approved_amount = float(req.approved_amount or req.final_amount or 0)
+    balance = max(approved_amount - total_paid, 0)
+
+    return {
+        "request_id": request_id,
+        "total_amount": req.final_amount,
+        "approved_amount": approved_amount,
+        "total_paid": total_paid,
+        "balance": balance,
+        "payment_status": req.payment_status,
+        "approval_status": req.approval_status,
+        "history": [
+            {
+                "id": p.id,
+                "payment_date": str(p.payment_date),
+                "payment_mode": p.payment_mode,
+                "paid_amount": p.paid_amount,
+                "balance_amount": p.balance_amount,
+                "remark": p.remark or "",
+                "created_at": str(p.created_at),
+            }
+            for p in payments
+        ],
+    }
+
+
+@router.post("/requests/{request_id}/partial-approve")
+def partial_approve_request(
+    request_id: int,
+    paid_amount: float = Form(...),
+    payment_mode: str = Form("Cash"),
+    remarks: str | None = Form(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(admin_required),
+):
+    req = db.get(PurchaseRequest, request_id)
+    if not req or req.is_deleted:
+        raise HTTPException(404, "Request not found")
+    if paid_amount <= 0:
+        raise HTTPException(400, "Payment amount must be greater than zero")
+
+    # Use final_amount as approved_amount if not already set
+    if not req.approved_amount:
+        req.approved_amount = req.final_amount
+    approved_amount = float(req.approved_amount or 0)
+
+    total_paid = db.scalar(
+        select(func.coalesce(func.sum(Payment.paid_amount), 0)).where(Payment.request_id == request_id)
+    ) or 0.0
+    remaining = max(approved_amount - total_paid, 0)
+
+    if paid_amount > remaining + 0.001:  # small epsilon for float tolerance
+        raise HTTPException(400, f"Payment ₹{paid_amount:.2f} exceeds remaining balance ₹{remaining:.2f}")
+
+    new_total_paid = total_paid + paid_amount
+    balance = max(approved_amount - new_total_paid, 0)
+
+    old = _as_dict(req)
+
+    payment = Payment(
+        request_id=request_id,
+        payment_date=date.today(),
+        payment_mode=payment_mode,
+        paid_amount=paid_amount,
+        balance_amount=balance,
+        remark=remarks,
+        created_by=user.id,
+    )
+    db.add(payment)
+
+    if balance <= 0.001:
+        req.payment_status = "Paid"
+        req.approval_status = "Approved"
+    else:
+        req.payment_status = "Partially Paid"
+        req.approval_status = "Partial Approved"
+
+    req.approved_by = req.approved_by or user.id
+    req.approved_at = req.approved_at or datetime.utcnow()
+    req.is_unread_admin = False
+
+    log_change(
+        db,
+        entity="purchase_request",
+        entity_id=req.id,
+        action="PARTIAL_APPROVE",
+        old_value=old,
+        new_value=_as_dict(req),
+        changed_by=user.id,
+    )
+    db.commit()
+
+    return {
+        "message": "Partial payment recorded" if balance > 0 else "Fully paid — moved to Approved",
+        "total_paid": new_total_paid,
+        "balance": balance,
+        "approval_status": req.approval_status,
+        "payment_status": req.payment_status,
+    }
 
 
 @router.post("/requests/{request_id}/hold")

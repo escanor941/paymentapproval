@@ -476,8 +476,8 @@ class AdminLocalClient:
 
         cols = (
             "id", "request_date", "factory_id", "vendor", "item_name",
-            "final_amount", "requested_by", "approval_status",
-            "payment_status", "updated_at",
+            "final_amount", "paid_amount", "balance_amount",
+            "requested_by", "approval_status", "payment_status", "updated_at",
         )
 
         # ── Requests page ─────────────────────────────────────────────────
@@ -496,7 +496,9 @@ class AdminLocalClient:
         col_hdrs = {
             "id": "ID", "request_date": "Date", "factory_id": "Factory",
             "vendor": "Vendor", "item_name": "Item Name",
-            "final_amount": "Amount (₹)", "requested_by": "Requested By",
+            "final_amount": "Total (\u20b9)", "paid_amount": "Paid (\u20b9)",
+            "balance_amount": "Balance (\u20b9)",
+            "requested_by": "Requested By",
             "approval_status": "Approval", "payment_status": "Payment",
             "updated_at": "Updated At",
         }
@@ -506,12 +508,14 @@ class AdminLocalClient:
         self.tree.column("id",              width=60,  anchor="center", minwidth=50)
         self.tree.column("request_date",    width=100, anchor="center", minwidth=80)
         self.tree.column("factory_id",      width=70,  anchor="center", minwidth=55)
-        self.tree.column("vendor",          width=155, minwidth=100)
-        self.tree.column("item_name",       width=175, minwidth=110)
-        self.tree.column("final_amount",    width=110, anchor="e",      minwidth=80)
-        self.tree.column("requested_by",    width=140, minwidth=100)
+        self.tree.column("vendor",          width=140, minwidth=90)
+        self.tree.column("item_name",       width=155, minwidth=100)
+        self.tree.column("final_amount",    width=90,  anchor="e",      minwidth=70)
+        self.tree.column("paid_amount",     width=85,  anchor="e",      minwidth=65)
+        self.tree.column("balance_amount",  width=85,  anchor="e",      minwidth=65)
+        self.tree.column("requested_by",    width=130, minwidth=90)
         self.tree.column("approval_status", width=110, anchor="center", minwidth=90)
-        self.tree.column("payment_status",  width=110, anchor="center", minwidth=90)
+        self.tree.column("payment_status",  width=100, anchor="center", minwidth=80)
         self.tree.column("updated_at",      width=155, minwidth=110)
 
         vs = ttk.Scrollbar(tree_card, orient="vertical",   command=self.tree.yview)
@@ -760,8 +764,12 @@ class AdminLocalClient:
             is_new = req_id not in self._viewed_ids
 
             req_row_values = (req_id, it.get("request_date"), it.get("factory_id"),
-                              it.get("vendor"), it.get("item_name"), it.get("final_amount"),
-                              it.get("requested_by"), it.get("approval_status"),
+                              it.get("vendor"), it.get("item_name"),
+                              f"{float(it.get('final_amount') or 0):.2f}",
+                              f"{float(it.get('total_paid') or 0):.2f}",
+                              f"{float(it.get('balance_amount') or 0):.2f}",
+                              it.get("requested_by"),
+                              approval_status,
                               it.get("payment_status"), it.get("updated_at"))
             # Bill uploads always show "Received" — no approve/reject flow needed
             bill_row_values = (req_id, it.get("request_date"), it.get("factory_id"),
@@ -1154,15 +1162,169 @@ class AdminLocalClient:
         req_id = self.selected_request_id()
         if req_id is None:
             return
-        self.open_text_action_dialog(
-            title="Partial Approved Request",
-            req_id=req_id,
-            path_template="/requests/{req_id}/hold",
-            field_name="remarks",
-            field_label="Partial Approved Remarks",
-            submit_text="Mark as Partial Approved",
-            required=False,
-        )
+        self.open_partial_approve_dialog(req_id)
+
+    def open_partial_approve_dialog(self, req_id: int) -> None:
+        import threading
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Partial Payment — Request #{req_id}")
+        dialog.geometry("560x620")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # ── Summary section ────────────────────────────────────────────────
+        summary_frame = ttk.LabelFrame(dialog, text="Payment Summary")
+        summary_frame.pack(fill="x", padx=14, pady=(14, 4))
+
+        total_var   = tk.StringVar(value="Loading…")
+        paid_var    = tk.StringVar(value="—")
+        balance_var = tk.StringVar(value="—")
+
+        for label, var in [("Total Amount (₹):", total_var),
+                           ("Already Paid (₹):", paid_var),
+                           ("Remaining Balance (₹):", balance_var)]:
+            row = ttk.Frame(summary_frame)
+            row.pack(fill="x", padx=10, pady=2)
+            ttk.Label(row, text=label, width=24, anchor="w").pack(side="left")
+            ttk.Label(row, textvariable=var, font=("Segoe UI", 10, "bold")).pack(side="left")
+
+        # ── Payment history table ──────────────────────────────────────────
+        hist_frame = ttk.LabelFrame(dialog, text="Payment History")
+        hist_frame.pack(fill="both", expand=False, padx=14, pady=4)
+
+        h_cols = ("date", "mode", "paid", "balance", "remark")
+        hist_tree = ttk.Treeview(hist_frame, columns=h_cols, show="headings", height=5)
+        for col, hdr, w in [("date", "Date", 95), ("mode", "Mode", 100),
+                             ("paid", "Paid (₹)", 85), ("balance", "Balance (₹)", 90),
+                             ("remark", "Remark", 140)]:
+            hist_tree.heading(col, text=hdr)
+            hist_tree.column(col, width=w, minwidth=60, anchor="center" if col not in ("remark",) else "w")
+        hist_hsb = ttk.Scrollbar(hist_frame, orient="horizontal", command=hist_tree.xview)
+        hist_tree.configure(xscrollcommand=hist_hsb.set)
+        hist_hsb.pack(side="bottom", fill="x")
+        hist_tree.pack(fill="both", expand=True)
+
+        # ── Payment entry form ─────────────────────────────────────────────
+        form_frame = ttk.LabelFrame(dialog, text="Record Payment")
+        form_frame.pack(fill="x", padx=14, pady=4)
+
+        amount_var  = tk.StringVar()
+        mode_var    = tk.StringVar(value="Cash")
+        remarks_var = tk.StringVar()
+
+        ttk.Label(form_frame, text="Payment Amount (₹) *", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
+        amount_entry = ttk.Entry(form_frame, textvariable=amount_var, font=("Segoe UI", 11))
+        amount_entry.pack(fill="x", padx=10)
+
+        ttk.Label(form_frame, text="Payment Mode *", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
+        ttk.Combobox(form_frame, textvariable=mode_var,
+                     values=["Cash", "UPI", "Bank Transfer", "Cheque"],
+                     state="readonly").pack(fill="x", padx=10)
+
+        ttk.Label(form_frame, text="Remarks (optional)", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
+        ttk.Entry(form_frame, textvariable=remarks_var).pack(fill="x", padx=10, pady=(0, 10))
+
+        # ── Status label + buttons ─────────────────────────────────────────
+        status_var = tk.StringVar(value="")
+        status_label = ttk.Label(dialog, textvariable=status_var, wraplength=520, justify="left")
+        status_label.pack(fill="x", padx=14, pady=(4, 0))
+
+        btn_row = ttk.Frame(dialog)
+        btn_row.pack(fill="x", padx=14, pady=10)
+
+        _remaining = [0.0]   # mutable holder so on_submit can read the loaded value
+
+        def _load_summary() -> None:
+            base = DEFAULT_BASE_URL.rstrip("/")
+            try:
+                resp = self.session.get(f"{base}/requests/{req_id}/payment-summary", timeout=20)
+                if resp.status_code != 200:
+                    dialog.after(0, lambda: status_var.set("Could not load payment summary."))
+                    dialog.after(0, lambda: status_label.configure(foreground="#b02a37"))
+                    return
+                data = resp.json()
+                total    = float(data.get("total_amount") or data.get("approved_amount") or 0)
+                paid     = float(data.get("total_paid") or 0)
+                balance  = float(data.get("balance") or 0)
+                _remaining[0] = balance
+                history  = data.get("history", [])
+
+                def _update_ui() -> None:
+                    total_var.set(f"{total:,.2f}")
+                    paid_var.set(f"{paid:,.2f}")
+                    balance_var.set(f"{balance:,.2f}")
+                    # pre-fill amount with remaining balance
+                    amount_var.set(f"{balance:.2f}" if balance > 0 else "0.00")
+                    # populate history
+                    for row in hist_tree.get_children():
+                        hist_tree.delete(row)
+                    for p in history:
+                        hist_tree.insert("", "end", values=(
+                            p.get("payment_date", ""),
+                            p.get("payment_mode", ""),
+                            f"{float(p.get('paid_amount') or 0):,.2f}",
+                            f"{float(p.get('balance_amount') or 0):,.2f}",
+                            p.get("remark", ""),
+                        ))
+                    if not history:
+                        hist_tree.insert("", "end", values=("—", "—", "—", "—", "No payments yet"))
+
+                dialog.after(0, _update_ui)
+            except Exception as exc:
+                dialog.after(0, lambda: status_var.set(f"Load error: {exc}"))
+                dialog.after(0, lambda: status_label.configure(foreground="#b02a37"))
+
+        threading.Thread(target=_load_summary, daemon=True).start()
+
+        def on_submit() -> None:
+            amount_str = amount_var.get().strip()
+            if not amount_str:
+                status_var.set("Payment amount is required.")
+                status_label.configure(foreground="#b02a37")
+                return
+            try:
+                amount = float(amount_str)
+                if amount <= 0:
+                    raise ValueError
+            except ValueError:
+                status_var.set("Payment amount must be a positive number.")
+                status_label.configure(foreground="#b02a37")
+                return
+
+            remaining = _remaining[0]
+            if remaining > 0 and amount > remaining + 0.01:
+                status_var.set(f"Amount ₹{amount:.2f} exceeds remaining balance ₹{remaining:.2f}.")
+                status_label.configure(foreground="#b02a37")
+                return
+
+            payload = {
+                "paid_amount": str(amount),
+                "payment_mode": mode_var.get().strip() or "Cash",
+            }
+            remark = remarks_var.get().strip()
+            if remark:
+                payload["remarks"] = remark
+
+            submit_btn.configure(state="disabled")
+            status_var.set("Submitting…")
+            status_label.configure(foreground="#555")
+
+            success, message = self._perform_action(f"/requests/{req_id}/partial-approve", payload)
+            status_var.set(message)
+            status_label.configure(foreground="#1f8a43" if success else "#b02a37")
+            submit_btn.configure(state="normal")
+            if success:
+                self.sync_from_server(silent=True)
+                self.root.after(1000, dialog.destroy)
+
+        ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="right", padx=(6, 0))
+        submit_btn = ttk.Button(btn_row, text="Record Payment", command=on_submit)
+        submit_btn.pack(side="right")
+
+        amount_entry.focus_set()
+        dialog.wait_window()
 
     def _expected_delete_password(self) -> str:
         # Optional deployment override; otherwise use the admin login password entered in this app.
