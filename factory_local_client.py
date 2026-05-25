@@ -17,7 +17,7 @@ APPROVAL_COLORS = {
     "Approved": ("#1f8a43", "#d4edda"),
     "Rejected":  ("#dc3545", "#f8d7da"),
     "Pending":   ("#0b5ed7", "#e7f0ff"),
-    "Hold":      ("#856404", "#fff3cd"),
+    "Partial Approved": ("#856404", "#fff3cd"),
     "Draft":     ("#6c757d", "#f0f0f0"),
 }
 
@@ -357,6 +357,13 @@ class FactoryLocalClient:
         ttk.Label(login_bar, textvariable=self.status_text, foreground="#1a3a6e",
                   font=("Segoe UI", 9, "italic")).grid(row=1, column=5, padx=8, sticky="w")
 
+        # ── Footer ────────────────────────────────────────────────────────────
+        footer = tk.Frame(self.root, bg="#1a3a6e", height=22)
+        footer.pack(side="bottom", fill="x")
+        footer.pack_propagate(False)
+        tk.Label(footer, text="Created by Daniyal  •  All Rights Reserved © 2026",
+                 bg="#1a3a6e", fg="#a8c4e0", font=("Segoe UI", 8)).pack(side="right", padx=12)
+
         nb = ttk.Notebook(self.root)
         nb.pack(fill="both", expand=True, padx=10, pady=8)
         self.notebook = nb
@@ -481,15 +488,16 @@ class FactoryLocalClient:
         ttk.Entry(fbar, textvariable=self.filt_vendor, width=16).pack(side="left", padx=(2, 8))
         ttk.Label(fbar, text="Status:").pack(side="left")
         ttk.Combobox(fbar, textvariable=self.filt_status,
-                     values=["", "Draft", "Pending", "Hold", "Rejected", "Approved"],
-                     state="readonly", width=10).pack(side="left", padx=(2, 6))
+                     values=["", "Draft", "Pending", "Partial Approved", "Rejected", "Approved"],
+                     state="readonly", width=14).pack(side="left", padx=(2, 6))
         ttk.Button(fbar, text="Search", command=self._apply_filters).pack(side="left")
 
         cols = ("id", "date", "vendor", "item", "amount", "approval", "payment", "actions")
         self.tree = ttk.Treeview(right, columns=cols, show="headings", height=18)
         self.tree.tag_configure("Approved",   background="#d4edda", foreground="#1f8a43")
         self.tree.tag_configure("Rejected",   background="#f8d7da", foreground="#dc3545")
-        self.tree.tag_configure("Hold",       background="#fff3cd", foreground="#856404")
+        self.tree.tag_configure("Partial Approved", background="#fff3cd", foreground="#856404")
+        self.tree.tag_configure("Hold",       background="#fff3cd", foreground="#856404")  # backward compat
         self.tree.tag_configure("Draft",      background="#f5f5f5", foreground="#6c757d")
         self.tree.tag_configure("Pending",    background="#ffffff", foreground="#0b5ed7")
         self.tree.tag_configure("new_status", background="#ffcccc", foreground="#cc0000")
@@ -620,6 +628,27 @@ class FactoryLocalClient:
                 self._set_conn(False)
                 messagebox.showerror("Login", f"Login failed: HTTP {r.status_code}")
                 return
+            redirect_to = (r.headers.get("Location") or "").strip()
+            if redirect_to.startswith("http"):
+                try:
+                    from urllib.parse import urlparse
+                    redirect_to = urlparse(redirect_to).path or "/"
+                except Exception:
+                    redirect_to = "/"
+            if redirect_to.startswith("/login"):
+                self.logged_in = False
+                self._set_conn(False)
+                messagebox.showerror("Login", "Invalid username or password")
+                return
+
+            # Validate that the issued session cookie can access an authenticated API route.
+            auth_check = self.session.get(f"{base}/requests", timeout=20)
+            if auth_check.status_code != 200:
+                self.logged_in = False
+                self._set_conn(False)
+                messagebox.showerror("Login", "Login succeeded but session validation failed. Please try again.")
+                return
+
             self.logged_in = True
             self._set_conn(True)
             self.f_requested_by.set(self.username.get())
@@ -764,6 +793,9 @@ class FactoryLocalClient:
         for r in rows:
             req_id = int(r[0])
             approval_status = r[5] or "Pending"
+            # Backward compat: old server may still return "Hold"
+            if approval_status == "Hold":
+                approval_status = "Partial Approved"
             prev_status = r[8]
             self.bill_paths[req_id] = r[7] or ""
 
@@ -778,7 +810,7 @@ class FactoryLocalClient:
             if changed:
                 status_changed.append((req_id, prev_status, approval_status, r[3], r[9]))
 
-            editable = approval_status in ("Pending", "Draft", "Hold")
+            editable = approval_status in ("Pending", "Draft", "Hold", "Partial Approved")
             actions = []
             if editable:
                 actions += ["[Edit]", "[Delete]"]
@@ -919,7 +951,7 @@ class FactoryLocalClient:
                 requested_by, notes, approval_status FROM my_requests WHERE id=?""", (req_id,)).fetchone()
         if not row:
             messagebox.showerror("Error", "Request not found. Sync first."); return
-        if row[14] not in ("Pending", "Draft", "Hold"):
+        if row[14] not in ("Pending", "Draft", "Hold", "Partial Approved"):
             messagebox.showwarning("Edit", f"Cannot edit: status is {row[14]}"); return
 
         self.edit_request_id = req_id
@@ -959,7 +991,7 @@ class FactoryLocalClient:
             row = conn.execute("SELECT approval_status FROM my_requests WHERE id=?", (req_id,)).fetchone()
         if not row:
             return
-        if row[0] not in ("Pending", "Draft", "Hold"):
+        if row[0] not in ("Pending", "Draft", "Hold", "Partial Approved"):
             messagebox.showwarning("Delete", f"Cannot delete: status is {row[0]}"); return
         if not messagebox.askyesno("Delete", f"Delete request #{req_id}?"):
             return

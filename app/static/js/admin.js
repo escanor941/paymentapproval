@@ -82,15 +82,14 @@ function renderRequests(items) {
       <td>${b(it.approval_status)}</td>
       <td>${b(it.payment_status)}</td>
       <td class="d-flex flex-wrap gap-1">
-        <button class="btn btn-sm btn-outline-dark" onclick="viewDetails(${it.id})">View</button>
-        ${it.bill_image_path ? `<a target="_blank" class="btn btn-sm btn-outline-secondary" href="/requests/${it.id}/bill">Bill</a>` : ''}
-        <button class="btn btn-sm btn-outline-primary" onclick="editRequest(${it.id})">Edit</button>
-        <button class="btn btn-sm btn-success" onclick="openApprove(${it.id})">Approve</button>
-        <button class="btn btn-sm btn-danger" onclick="openReject(${it.id})">Reject</button>
-        <button class="btn btn-sm btn-warning" onclick="holdRequest(${it.id})">Hold</button>
-        <button class="btn btn-sm btn-primary" onclick="openPay(${it.id})">Mark Paid</button>
-        <button class="btn btn-sm btn-outline-danger" onclick="deleteRequest(${it.id})">Delete</button>
-        <button class="btn btn-sm btn-outline-dark" onclick="window.print()">Print</button>
+        <button class="btn btn-sm btn-outline-secondary" onclick="viewDetails(${it.id})" title="View"><i class="bi bi-eye"></i></button>
+        ${it.bill_image_path ? `<a target="_blank" class="btn btn-sm btn-outline-dark" href="/requests/${it.id}/bill" title="Bill"><i class="bi bi-file-earmark-image"></i></a>` : ''}
+        <button class="btn btn-sm btn-outline-primary" onclick="editRequest(${it.id})" title="Edit"><i class="bi bi-pencil"></i></button>
+        <button class="btn btn-sm btn-success" onclick="openApprove(${it.id})" title="Approve"><i class="bi bi-check-lg"></i></button>
+        <button class="btn btn-sm btn-danger" onclick="openReject(${it.id})" title="Reject"><i class="bi bi-x-lg"></i></button>
+        <button class="btn btn-sm btn-warning text-dark" onclick="holdRequest(${it.id})" title="Partial Approved"><i class="bi bi-hourglass-split"></i></button>
+        <button class="btn btn-sm btn-primary" onclick="openPay(${it.id})" title="Mark Paid"><i class="bi bi-currency-rupee"></i></button>
+        <button class="btn btn-sm btn-outline-danger" onclick="deleteRequest(${it.id})" title="Delete"><i class="bi bi-trash"></i></button>
       </td>
     `;
     reqBody.appendChild(tr);
@@ -160,11 +159,13 @@ function restoreRequestsFromCache() {
 }
 
 function b(status) {
-  if (status === 'Pending') return '<span class="badge badge-pending">Pending</span>';
-  if (status === 'Approved') return '<span class="badge badge-approved">Approved</span>';
-  if (status === 'Rejected') return '<span class="badge badge-rejected">Rejected</span>';
-  if (status === 'Paid') return '<span class="badge badge-paid">Paid</span>';
-  return `<span class="badge text-bg-secondary">${status}</span>`;
+  if (status === 'Pending')  return '<span class="badge badge-pending">⏳ Pending</span>';
+  if (status === 'Approved') return '<span class="badge badge-approved">✅ Approved</span>';
+  if (status === 'Rejected') return '<span class="badge badge-rejected">❌ Rejected</span>';
+  if (status === 'Paid')     return '<span class="badge badge-paid">💳 Paid</span>';
+  if (status === 'Partial Approved' || status === 'Hold') return '<span class="badge badge-hold">🔶 Partial Approved</span>';
+  if (status === 'Draft')    return '<span class="badge badge-draft">📝 Draft</span>';
+  return `<span class="badge badge-draft">${status || '—'}</span>`;
 }
 
 async function loadRequests() {
@@ -252,7 +253,7 @@ function openPay(id) {
 window.openPay = openPay;
 
 async function holdRequest(id) {
-  const remarks = prompt('Hold remarks (optional):') || '';
+  const remarks = prompt('Partial Approved remarks (optional):') || '';
   const fd = new FormData();
   fd.append('remarks', remarks);
   const res = await fetch(`/requests/${id}/hold`, { method: 'POST', body: fd });

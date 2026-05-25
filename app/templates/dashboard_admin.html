@@ -11,25 +11,75 @@
 </div>
 
 <div class="row g-3 mb-3">
-    <div class="col-6 col-md-3 col-xl-2"><div class="card card-stat p-2"><small>New Requests</small><h5>{{ stats.new_requests }}</h5></div></div>
-    <div class="col-6 col-md-3 col-xl-2"><div class="card card-stat p-2"><small>Pending</small><h5>{{ stats.pending_approval }}</h5></div></div>
-    <div class="col-6 col-md-3 col-xl-2"><div class="card card-stat p-2"><small>Approved</small><h5>{{ stats.approved }}</h5></div></div>
-    <div class="col-6 col-md-3 col-xl-2"><div class="card card-stat p-2"><small>Rejected</small><h5>{{ stats.rejected }}</h5></div></div>
-    <div class="col-6 col-md-3 col-xl-2"><div class="card card-stat p-2"><small>Pending Payment</small><h5>{{ stats.pending_payment }}</h5></div></div>
-    <div class="col-6 col-md-3 col-xl-2"><div class="card card-stat p-2"><small>Paid Today</small><h5>{{ stats.paid_today }}</h5></div></div>
+    <div class="col-6 col-md-4 col-xl-2">
+        <div class="card card-stat stat-new p-3">
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <span style="background:#dbeafe;color:#1d4ed8;border-radius:8px;padding:.3rem .45rem;font-size:.95rem"><i class="bi bi-inbox"></i></span>
+                <small>New Requests</small>
+            </div>
+            <h5>{{ stats.new_requests }}</h5>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-xl-2">
+        <div class="card card-stat stat-pending p-3">
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <span style="background:#ffedd5;color:#c2410c;border-radius:8px;padding:.3rem .45rem;font-size:.95rem"><i class="bi bi-hourglass-split"></i></span>
+                <small>Pending</small>
+            </div>
+            <h5>{{ stats.pending_approval }}</h5>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-xl-2">
+        <div class="card card-stat stat-approved p-3">
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <span style="background:#dcfce7;color:#15803d;border-radius:8px;padding:.3rem .45rem;font-size:.95rem"><i class="bi bi-check-circle"></i></span>
+                <small>Approved</small>
+            </div>
+            <h5>{{ stats.approved }}</h5>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-xl-2">
+        <div class="card card-stat stat-rejected p-3">
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <span style="background:#fee2e2;color:#be123c;border-radius:8px;padding:.3rem .45rem;font-size:.95rem"><i class="bi bi-x-circle"></i></span>
+                <small>Rejected</small>
+            </div>
+            <h5>{{ stats.rejected }}</h5>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-xl-2">
+        <div class="card card-stat stat-pay p-3">
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <span style="background:#e0f2fe;color:#0369a1;border-radius:8px;padding:.3rem .45rem;font-size:.95rem"><i class="bi bi-currency-rupee"></i></span>
+                <small>Pending Payment</small>
+            </div>
+            <h5>{{ stats.pending_payment }}</h5>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-xl-2">
+        <div class="card card-stat stat-paid p-3">
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <span style="background:#ede9fe;color:#6d28d9;border-radius:8px;padding:.3rem .45rem;font-size:.95rem"><i class="bi bi-patch-check"></i></span>
+                <small>Paid Today</small>
+            </div>
+            <h5>{{ stats.paid_today }}</h5>
+        </div>
+    </div>
 </div>
 <div class="mb-3">
     <div class="card p-3">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-            <h6 class="mb-0">This Month Spend</h6>
-            <span class="badge text-bg-primary">{{ '%.2f'|format(stats.month_spend or 0) }}</span>
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h6 class="mb-0 fw-bold" style="color:#0d2b4e"><i class="bi bi-funnel me-2 text-primary"></i>Filter Requests</h6>
+            <span class="badge rounded-pill" style="background:#e8f0fe;color:#1a4a80;font-size:.8rem">
+                <i class="bi bi-calendar-month me-1"></i>This Month: &#8377;{{ '%.0f'|format(stats.month_spend or 0) }}
+            </span>
         </div>
         <div class="row g-2 align-items-end">
             <div class="col-md-2"><label class="form-label">From</label><input id="fFrom" type="date" class="form-control"></div>
             <div class="col-md-2"><label class="form-label">To</label><input id="fTo" type="date" class="form-control"></div>
             <div class="col-md-2"><label class="form-label">Factory</label><select id="fFactory" class="form-select"><option value="">All</option>{% for x in factories %}<option value="{{ x.id }}">{{ x.name }}</option>{% endfor %}</select></div>
             <div class="col-md-2"><label class="form-label">Vendor</label><input id="fVendor" class="form-control" placeholder="Vendor"></div>
-            <div class="col-md-2"><label class="form-label">Status</label><select id="fStatus" class="form-select"><option value="">All</option><option>Draft</option><option>Pending</option><option>Approved</option><option>Rejected</option><option>Hold</option></select></div>
+            <div class="col-md-2"><label class="form-label">Status</label><select id="fStatus" class="form-select"><option value="">All</option><option>Draft</option><option>Pending</option><option>Approved</option><option>Rejected</option><option>Partial Approved</option></select></div>
             <div class="col-md-2"><label class="form-label">Payment</label><select id="fPayment" class="form-select"><option value="">All</option><option>Unpaid</option><option>Partially Paid</option><option>Paid</option><option>Hold</option></select></div>
         </div>
         <div class="d-flex gap-2 mt-2">

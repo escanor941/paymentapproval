@@ -16,6 +16,8 @@ from app.utils.telegram_notify import (
     telegram_bill_upload,
     telegram_new_request,
     telegram_request_approved,
+    telegram_request_rejected,
+    telegram_request_hold,
 )
 
 router = APIRouter(tags=["requests"])
@@ -553,7 +555,7 @@ def update_request(
         raise HTTPException(404, "Request not found")
 
     if user.role != "admin":
-        if req.requested_by_user_id != user.id or req.approval_status not in ["Pending", "Draft", "Hold"]:
+        if req.requested_by_user_id != user.id or req.approval_status not in ["Pending", "Draft", "Hold", "Partial Approved"]:
             raise HTTPException(403, "Edit not permitted")
 
     if qty <= 0 or rate <= 0:
@@ -790,7 +792,7 @@ def delete_request(
         raise HTTPException(404, "Request not found")
 
     if user.role != "admin":
-        if req.requested_by_user_id != user.id or req.approval_status not in ["Pending", "Draft", "Hold"]:
+        if req.requested_by_user_id != user.id or req.approval_status not in ["Pending", "Draft", "Hold", "Partial Approved"]:
             raise HTTPException(403, "Delete not permitted")
 
     req.is_deleted = True
@@ -858,7 +860,24 @@ def reject_request(
     req.is_unread_admin = False
 
     log_change(db, entity="purchase_request", entity_id=req.id, action="REJECT", old_value=old, new_value=_as_dict(req), changed_by=user.id)
+    try:
+        tg_data = _collect_approval_telegram_data(db, req, user)
+    except Exception:
+        logger.exception("Failed to collect rejection Telegram data for request %s", req.id)
+        tg_data = None
     db.commit()
+    if tg_data:
+        try:
+            telegram_request_rejected(
+                req_id=tg_data["req_id"],
+                factory_name=tg_data["factory_name"],
+                item_name=tg_data["item_name"],
+                vendor=tg_data["vendor"],
+                reason=reason,
+                rejected_by=tg_data["approved_by"],
+            )
+        except Exception:
+            logger.exception("Exception sending rejection Telegram for request %s", req.id)
     return {"message": "Rejected"}
 
 
@@ -874,13 +893,49 @@ def hold_request(
         raise HTTPException(404, "Request not found")
 
     old = _as_dict(req)
-    req.approval_status = "Hold"
+    req.approval_status = "Partial Approved"
     req.approval_remark = remarks
     req.is_unread_admin = False
 
-    log_change(db, entity="purchase_request", entity_id=req.id, action="HOLD", old_value=old, new_value=_as_dict(req), changed_by=user.id)
+    log_change(db, entity="purchase_request", entity_id=req.id, action="PARTIAL_APPROVED", old_value=old, new_value=_as_dict(req), changed_by=user.id)
+    try:
+        tg_data = _collect_approval_telegram_data(db, req, user)
+    except Exception:
+        logger.exception("Failed to collect hold Telegram data for request %s", req.id)
+        tg_data = None
     db.commit()
-    return {"message": "Moved to hold"}
+    if tg_data:
+        try:
+            telegram_request_hold(
+                req_id=tg_data["req_id"],
+                factory_name=tg_data["factory_name"],
+                item_name=tg_data["item_name"],
+                vendor=tg_data["vendor"],
+                remarks=remarks or "",
+                held_by=tg_data["approved_by"],
+            )
+        except Exception:
+            logger.exception("Exception sending hold Telegram for request %s", req.id)
+    return {"message": "Moved to Partial Approved"}
+
+
+@router.post("/requests/{request_id}/receive")
+def receive_bill(
+    request_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(admin_required),
+):
+    req = db.get(PurchaseRequest, request_id)
+    if not req or req.is_deleted:
+        raise HTTPException(404, "Request not found")
+    if req.approval_status == "Received":
+        return {"message": "Already received"}
+    old = _as_dict(req)
+    req.approval_status = "Received"
+    req.is_unread_admin = False
+    log_change(db, entity="purchase_request", entity_id=req.id, action="RECEIVE", old_value=old, new_value=_as_dict(req), changed_by=user.id)
+    db.commit()
+    return {"message": "Marked as received"}
 
 
 @router.post("/requests/{request_id}/pay")
@@ -898,8 +953,8 @@ def mark_paid(
     req = db.get(PurchaseRequest, request_id)
     if not req or req.is_deleted:
         raise HTTPException(404, "Request not found")
-    if req.approval_status != "Approved":
-        raise HTTPException(400, "Cannot mark paid unless approved")
+    if req.approval_status not in ("Approved", "Partial Approved"):
+        raise HTTPException(400, "Cannot mark paid unless approved or partial approved")
     if paid_amount <= 0:
         raise HTTPException(400, "Paid amount must be greater than zero")
 
@@ -927,6 +982,8 @@ def mark_paid(
 
     if balance == 0:
         req.payment_status = "Paid"
+        if req.approval_status == "Partial Approved":
+            req.approval_status = "Approved"
     elif new_total_paid > 0:
         req.payment_status = "Partially Paid"
     else:

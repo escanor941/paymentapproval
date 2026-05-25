@@ -171,3 +171,41 @@ def telegram_request_approved(
         f"By      : {escape(approved_by)}"
     )
     return _send(message)
+
+
+def telegram_request_rejected(
+    req_id: int,
+    factory_name: str,
+    item_name: str,
+    vendor: str,
+    reason: str,
+    rejected_by: str,
+) -> bool:
+    message = (
+        f"❌ <b>Request Rejected #{req_id}</b>\n"
+        f"Factory : {escape(factory_name)}\n"
+        f"Item    : {escape(item_name)}\n"
+        f"Vendor  : {escape(vendor)}\n"
+        f"Reason  : {escape(reason or 'No reason provided')}\n"
+        f"By      : {escape(rejected_by)}"
+    )
+    return _send(message)
+
+
+def telegram_request_hold(
+    req_id: int,
+    factory_name: str,
+    item_name: str,
+    vendor: str,
+    remarks: str,
+    held_by: str,
+) -> bool:
+    message = (
+        f"🔶 <b>Request Partial Approved #{req_id}</b>\n"
+        f"Factory : {escape(factory_name)}\n"
+        f"Item    : {escape(item_name)}\n"
+        f"Vendor  : {escape(vendor)}\n"
+        f"Remarks : {escape(remarks or 'No remarks')}\n"
+        f"By      : {escape(held_by)}"
+    )
+    return _send(message)

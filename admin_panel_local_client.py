@@ -2,6 +2,7 @@ import os
 import sqlite3
 import io
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -80,8 +81,14 @@ class AdminLocalClient:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("EMD Group — Admin Panel")
-        self.root.geometry("1320x740")
+        self.root.geometry("1420x820")
+        self.root.minsize(1100, 640)
         self._apply_theme()
+        self.root.update_idletasks()
+        _w, _h = 1420, 820
+        _sw = self.root.winfo_screenwidth()
+        _sh = self.root.winfo_screenheight()
+        self.root.geometry(f"{_w}x{_h}+{(_sw - _w) // 2}+{(_sh - _h) // 2}")
 
         self.session = requests.Session()
 
@@ -108,220 +115,533 @@ class AdminLocalClient:
         self.preview_status = tk.StringVar(value="No bill loaded")
         self._preview_photo = None
         self._preview_pil_image = None
+        self._pdf_pages: list = []          # PIL Image per PDF page
+        self._pdf_current_page: int = 0
+        self._pdf_page_label_var = tk.StringVar(value="")
         self.preview_req_id: int | None = None
         self.preview_filename = ""
         self._last_bill_url_by_req: dict[int, str] = {}
         self._viewed_ids: set[int] = set()
 
         self._last_server_items: list[dict] = []
+        self._status_filter: str = ""
 
         self._build_ui()
         self.status_text.set("Please login to load data from server")
         self.schedule_auto_sync()
 
     def _apply_theme(self) -> None:
-        BG, PRIMARY, WHITE = "#f0f4f8", "#1a3a6e", "#ffffff"
+        BG      = "#f0f4f9"   # main content background (matches _MAIN_BG)
+        PRIMARY = "#0B2C5F"   # sidebar / header navy
+        ACCENT  = "#c8102e"   # EMD red
+        WHITE   = "#ffffff"
         style = ttk.Style(self.root)
         style.theme_use("clam")
         self.root.configure(bg=BG)
-        style.configure(".", background=BG, font=("Segoe UI", 10))
-        style.configure("TFrame", background=BG)
-        style.configure("TLabel", background=BG, font=("Segoe UI", 10))
-        style.configure("TLabelframe", background=BG)
-        style.configure("TLabelframe.Label", background=BG, font=("Segoe UI", 10, "bold"), foreground=PRIMARY)
-        style.configure("TNotebook", background=BG, tabmargins=[2, 5, 2, 0])
-        style.configure("TNotebook.Tab", background="#c9d6e8", foreground=PRIMARY,
-                        font=("Segoe UI", 10, "bold"), padding=[14, 6])
-        style.map("TNotebook.Tab", background=[("selected", PRIMARY)], foreground=[("selected", WHITE)])
-        style.configure("Treeview", background=WHITE, fieldbackground=WHITE,
-                        font=("Segoe UI", 10), rowheight=28)
+        style.configure(".",                background=BG, font=("Segoe UI", 10))
+        style.configure("TFrame",           background=BG)
+        style.configure("TLabel",           background=BG, font=("Segoe UI", 10))
+        style.configure("TLabelframe",      background=BG)
+        style.configure("TLabelframe.Label",background=BG, font=("Segoe UI", 10, "bold"), foreground=PRIMARY)
+        style.configure("Treeview",         background=WHITE, fieldbackground=WHITE,
+                        font=("Segoe UI", 10), rowheight=30)
         style.configure("Treeview.Heading", background=PRIMARY, foreground=WHITE,
-                        font=("Segoe UI", 10, "bold"), relief="flat")
-        style.map("Treeview", background=[("selected", "#2563a8")], foreground=[("selected", WHITE)])
-        style.configure("TEntry", fieldbackground=WHITE, font=("Segoe UI", 10), padding=4)
-        style.configure("TCombobox", fieldbackground=WHITE, font=("Segoe UI", 10))
-        style.configure("TCheckbutton", background=BG, font=("Segoe UI", 10))
-        style.configure("TScrollbar", background="#c9d6e8", troughcolor="#e0e8f0", relief="flat")
+                        font=("Segoe UI", 10, "bold"), relief="flat", padding=(6, 6))
+        style.map("Treeview",
+                  background=[("selected", "#1e5faa")],
+                  foreground=[("selected", WHITE)])
+        style.configure("TEntry",           fieldbackground=WHITE, font=("Segoe UI", 10), padding=5)
+        style.configure("TCombobox",        fieldbackground=WHITE, font=("Segoe UI", 10))
+        style.configure("TCheckbutton",     background="#061c3d", foreground="#93c5fd",
+                        font=("Segoe UI", 9))
+        style.configure("TScrollbar",       background="#c4d4e8", troughcolor="#e2e8f0", relief="flat")
+        style.configure("TButton",          background=PRIMARY, foreground=WHITE,
+                        font=("Segoe UI", 10, "bold"), padding=(10, 5))
+        style.map("TButton",
+                  background=[("active", "#163d7a")],
+                  foreground=[("active", WHITE)])
 
     def _draw_emd_logo(self, canvas: tk.Canvas) -> None:
-        canvas.create_rectangle(0, 0, 190, 65, fill="#1a3a6e", outline="")
-        canvas.create_text(95, 20, text="EMD", fill="white", font=("Segoe UI", 22, "bold"), anchor="center")
-        canvas.create_line(18, 32, 68, 32, fill="#c8102e", width=2)
-        canvas.create_line(122, 32, 172, 32, fill="#c8102e", width=2)
-        canvas.create_text(95, 44, text="Group", fill="white", font=("Segoe UI", 12, "bold"), anchor="center")
-        canvas.create_rectangle(0, 55, 190, 65, fill="#c8102e", outline="")
-        canvas.create_text(95, 60, text="Scaffolding & Form Work", fill="white", font=("Segoe UI", 7), anchor="center")
+        # Background
+        canvas.create_rectangle(0, 0, 210, 72, fill="#0d2b4e", outline="")
+        # Top red accent strip
+        canvas.create_rectangle(0, 0, 210, 5, fill="#c8102e", outline="")
+        # "EMD" large bold text
+        canvas.create_text(105, 30, text="EMD", fill="#ffffff",
+                           font=("Segoe UI", 26, "bold"), anchor="center")
+        # Decorative flanking lines
+        canvas.create_line(14, 38, 60, 38, fill="#c8102e", width=2)
+        canvas.create_line(150, 38, 196, 38, fill="#c8102e", width=2)
+        # "Group" text
+        canvas.create_text(105, 51, text="GROUP", fill="#a8c4e0",
+                           font=("Segoe UI", 9, "bold"), anchor="center")
+        # Bottom tagline bar
+        canvas.create_rectangle(0, 62, 210, 72, fill="#c8102e", outline="")
+        canvas.create_text(105, 67, text="Scaffolding & Form Work", fill="white",
+                           font=("Segoe UI", 7), anchor="center")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # DESIGN CONSTANTS
+    # ─────────────────────────────────────────────────────────────────────────
+    _S_BG     = "#0B2C5F"   # sidebar navy
+    _S_HOVER  = "#163d7a"   # sidebar hover
+    _S_ACTIVE = "#1e5faa"   # sidebar active
+    _S_TEXT   = "#bfdbfe"   # sidebar nav text
+    _MAIN_BG  = "#f0f4f9"   # main content background
+    _CARD_BG  = "#ffffff"   # card background
+    _HDR_BG   = "#0B2C5F"   # top header (matches sidebar)
+    _BORDER   = "#e2e8f0"   # card/panel border
 
     def _build_ui(self) -> None:
-        # ── Header bar ──────────────────────────────────────────────────────
-        hdr = tk.Frame(self.root, bg="#1a3a6e", height=75)
+        S_BG    = self._S_BG
+        S_HOVER = self._S_HOVER
+        S_ACTIVE= self._S_ACTIVE
+        S_TEXT  = self._S_TEXT
+        MAIN_BG = self._MAIN_BG
+        CARD_BG = self._CARD_BG
+        HDR_BG  = self._HDR_BG
+        BORDER  = self._BORDER
+
+        # ── Footer (packed first so it stays at very bottom) ──────────────
+        footer = tk.Frame(self.root, bg="#061c3d", height=24)
+        footer.pack(side="bottom", fill="x")
+        footer.pack_propagate(False)
+        tk.Label(footer,
+                 text="EMD Group  ·  Purchase Approval System  ·  Created by Daniyal  ·  © 2026",
+                 bg="#061c3d", fg="#475569", font=("Segoe UI", 8)).pack(side="right", padx=14)
+
+        # ── Outer wrapper: sidebar | main ─────────────────────────────────
+        outer = tk.Frame(self.root, bg=MAIN_BG)
+        outer.pack(fill="both", expand=True)
+
+        # ══════════════════════════════════════════════════════════════════
+        # SIDEBAR
+        # ══════════════════════════════════════════════════════════════════
+        sidebar = tk.Frame(outer, bg=S_BG, width=238)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+
+        # ── Logo pane ─────────────────────────────────────────────────────
+        logo_pane = tk.Frame(sidebar, bg="#061c3d", height=78)
+        logo_pane.pack(fill="x")
+        logo_pane.pack_propagate(False)
+        logo_c = tk.Canvas(logo_pane, width=238, height=78, bg="#061c3d", highlightthickness=0)
+        logo_c.pack()
+        logo_c.create_rectangle(0, 0, 238, 6, fill="#c8102e", outline="")
+        logo_c.create_text(119, 35, text="EMD", fill="#ffffff",
+                           font=("Segoe UI", 28, "bold"), anchor="center")
+        logo_c.create_line(16, 48, 66, 48, fill="#c8102e", width=2)
+        logo_c.create_line(172, 48, 222, 48, fill="#c8102e", width=2)
+        logo_c.create_text(119, 56, text="GROUP", fill="#7aaad4",
+                           font=("Segoe UI", 9, "bold"), anchor="center")
+        logo_c.create_rectangle(0, 68, 238, 78, fill="#c8102e", outline="")
+        logo_c.create_text(119, 73, text="Scaffolding & Form Work",
+                           fill="white", font=("Segoe UI", 7), anchor="center")
+
+        # ── Nav menu ──────────────────────────────────────────────────────
+        tk.Frame(sidebar, bg="#1e3f6e", height=1).pack(fill="x")
+        nav_pane = tk.Frame(sidebar, bg=S_BG)
+        nav_pane.pack(fill="both", expand=True, pady=(6, 0))
+
+        self._active_page = "requests"
+        self._nav_btns: dict[str, tk.Button] = {}
+
+        nav_items = [
+            ("\U0001f4ca   Dashboard",         "dashboard"),
+            ("\U0001f4cb   Requests",          "requests"),
+            ("\U0001f9fe   Bill Uploads",      "bills"),
+            ("\U0001f5bc   Bill Preview",      "preview"),
+            ("\U0001f3ed   Factory Locations", "locations"),
+        ]
+        for label, page_id in nav_items:
+            b = tk.Button(
+                nav_pane, text=f"  {label}", anchor="w",
+                bg=S_BG, fg=S_TEXT,
+                font=("Segoe UI", 10), relief="flat", bd=0, cursor="hand2",
+                padx=18, pady=10,
+                activebackground=S_HOVER, activeforeground="#ffffff",
+                command=lambda p=page_id: self._switch_page(p),
+            )
+            b.pack(fill="x")
+            b.bind("<Enter>",
+                   lambda e, btn=b, p=page_id: btn.config(
+                       bg=S_ACTIVE if p == self._active_page else S_HOVER,
+                       fg="#ffffff"))
+            b.bind("<Leave>",
+                   lambda e, btn=b, p=page_id: btn.config(
+                       bg=S_ACTIVE if p == self._active_page else S_BG,
+                       fg="#ffffff" if p == self._active_page else S_TEXT))
+            self._nav_btns[page_id] = b
+
+        # ── Sidebar footer: credentials + connection ───────────────────────
+        tk.Frame(sidebar, bg="#1e3f6e", height=1).pack(side="bottom", fill="x")
+        sb_foot = tk.Frame(sidebar, bg="#061c3d")
+        sb_foot.pack(side="bottom", fill="x", padx=12, pady=8)
+
+        def _slbl(t):
+            return tk.Label(sb_foot, text=t, bg="#061c3d", fg="#64748b",
+                            font=("Segoe UI", 7, "bold"))
+
+        _slbl("USERNAME").grid(row=0, column=0, sticky="w", pady=(0, 1))
+        ttk.Entry(sb_foot, textvariable=self.username, width=11).grid(row=1, column=0, padx=(0, 5), sticky="ew")
+        _slbl("PASSWORD").grid(row=0, column=1, sticky="w")
+        ttk.Entry(sb_foot, textvariable=self.password, show="*", width=10).grid(row=1, column=1, sticky="ew")
+        ttk.Checkbutton(sb_foot, text="Auto Sync",
+                        variable=self.auto_sync_enabled).grid(row=2, column=0, columnspan=2,
+                                                              sticky="w", pady=(4, 0))
+        conn_row = tk.Frame(sb_foot, bg="#061c3d")
+        conn_row.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self._conn_dot = tk.Label(conn_row, text="●", bg="#061c3d", fg="#dc3545",
+                                  font=("Segoe UI", 13))
+        self._conn_dot.pack(side="left")
+        tk.Label(conn_row, textvariable=self.conn_text, bg="#061c3d", fg="#93c5fd",
+                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=4)
+
+        # ══════════════════════════════════════════════════════════════════
+        # MAIN AREA (right of sidebar)
+        # ══════════════════════════════════════════════════════════════════
+        main_area = tk.Frame(outer, bg=MAIN_BG)
+        main_area.pack(side="left", fill="both", expand=True)
+
+        # ── Top header bar ────────────────────────────────────────────────
+        hdr = tk.Frame(main_area, bg=HDR_BG, height=58)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
-        logo_c = tk.Canvas(hdr, width=190, height=65, bg="#1a3a6e", highlightthickness=0)
-        logo_c.pack(side="left", padx=(12, 0), pady=5)
-        self._draw_emd_logo(logo_c)
-        title_f = tk.Frame(hdr, bg="#1a3a6e")
-        title_f.pack(side="left", padx=14, pady=10)
-        tk.Label(title_f, text="Admin Panel", bg="#1a3a6e", fg="white",
-                 font=("Segoe UI", 18, "bold")).pack(anchor="w")
-        tk.Label(title_f, text="Purchase Approval System  —  Head Office",
-                 bg="#1a3a6e", fg="#a8c4e0", font=("Segoe UI", 9)).pack(anchor="w")
-        right_hdr = tk.Frame(hdr, bg="#1a3a6e")
-        right_hdr.pack(side="right", padx=14)
-        self._conn_dot = tk.Label(right_hdr, text="●", bg="#1a3a6e", fg="#dc3545", font=("Segoe UI", 16))
-        self._conn_dot.pack(side="right", padx=(4, 0))
-        tk.Label(right_hdr, textvariable=self.conn_text, bg="#1a3a6e", fg="white",
-                 font=("Segoe UI", 10, "bold")).pack(side="right")
 
-        # ── Toolbar ──────────────────────────────────────────────────────────
-        toolbar = tk.Frame(self.root, bg="#dce6f0", pady=5)
-        toolbar.pack(fill="x")
+        self._page_title_var = tk.StringVar(value="Purchase Requests")
+        tk.Label(hdr, textvariable=self._page_title_var,
+                 bg=HDR_BG, fg="#ffffff",
+                 font=("Segoe UI", 13, "bold")).pack(side="left", padx=20, pady=12)
 
-        def _btn(parent, text, cmd, bg="#1a3a6e"):
-            return tk.Button(parent, text=text, command=cmd, bg=bg, fg="white",
-                             font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
-                             padx=10, pady=5, activebackground="#0d2a56", activeforeground="white", bd=0)
+        # Right side of header
+        right_hdr = tk.Frame(hdr, bg=HDR_BG)
+        right_hdr.pack(side="right", padx=14, pady=8)
 
-        _btn(toolbar, "\U0001f510  Login",        self.login).pack(side="left", padx=(8, 4))
-        _btn(toolbar, "\U0001f504  Sync",          self.sync_from_server, "#1565a0").pack(side="left", padx=4)
-        _btn(toolbar, "\U0001f9fe  View Bill",     self.view_bill_selected, "#1565a0").pack(side="left", padx=4)
-        _btn(toolbar, "\U0001f4e5  Download Bill", self.download_bill_selected, "#1565a0").pack(side="left", padx=4)
-        _btn(toolbar, "\u2705  Approve",           self.approve_selected, "#1b5e20").pack(side="left", padx=4)
-        _btn(toolbar, "\u274c  Reject",            self.reject_selected, "#b71c1c").pack(side="left", padx=4)
-        _btn(toolbar, "\u23f8  Hold",              self.hold_selected, "#e65100").pack(side="left", padx=4)
-        _btn(toolbar, "\U0001f5d1  Delete",        self.delete_selected, "#7f1d1d").pack(side="left", padx=4)
-        _btn(toolbar, "\U0001f4ca  Export Excel",  self.export_local_excel, "#4a148c").pack(side="left", padx=4)
+        # Status chip
+        tk.Label(right_hdr, textvariable=self.status_text,
+                 bg="#163d7a", fg="#bfdbfe",
+                 font=("Segoe UI", 8), padx=8, pady=4).pack(side="right", padx=(6, 0))
 
-        # ── Login / connection bar ───────────────────────────────────────────
-        login_bar = ttk.Frame(self.root, padding=(8, 4, 8, 2))
-        login_bar.pack(fill="x")
-        ttk.Label(login_bar, text="Username").grid(row=0, column=0, sticky="w")
-        ttk.Entry(login_bar, textvariable=self.username, width=20).grid(row=1, column=0, padx=(0, 8), sticky="w")
-        ttk.Label(login_bar, text="Password").grid(row=0, column=1, sticky="w")
-        ttk.Entry(login_bar, textvariable=self.password, show="*", width=20).grid(row=1, column=1, padx=(0, 8), sticky="w")
-        ttk.Checkbutton(login_bar, text="Auto Sync (10s)", variable=self.auto_sync_enabled).grid(row=1, column=2, padx=8)
-        ttk.Label(login_bar, textvariable=self.status_text, foreground="#1a3a6e",
-                  font=("Segoe UI", 9, "italic")).grid(row=1, column=3, padx=8, sticky="w")
+        # Login button in header
+        def _hbtn(parent, text, cmd, bg="#163d7a", hov="#1e5faa"):
+            b = tk.Button(parent, text=text, command=cmd, bg=bg, fg="#ffffff",
+                          font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
+                          padx=10, pady=4, bd=0,
+                          activebackground=hov, activeforeground="white")
+            b.bind("<Enter>", lambda e: b.config(bg=hov))
+            b.bind("<Leave>", lambda e: b.config(bg=bg))
+            return b
+
+        _hbtn(right_hdr, "\U0001f510 Login", self.login).pack(side="right", padx=3)
+
+        # Search bar
+        srch_frame = tk.Frame(right_hdr, bg="#163d7a")
+        srch_frame.pack(side="right", padx=(0, 6))
+        self._search_var = tk.StringVar()
+        self._search_var.trace_add("write", lambda *_: self._apply_search_filter())
+        srch = tk.Entry(srch_frame, textvariable=self._search_var,
+                        bg="#1a4a80", fg="#bfdbfe", insertbackground="#bfdbfe",
+                        font=("Segoe UI", 9), relief="flat", width=28,
+                        highlightthickness=1, highlightbackground="#2a5c9a",
+                        highlightcolor="#5b8fd4")
+        srch.pack(ipady=5, padx=4)
+        _PLACEHOLDER = "\U0001f50d  Search vendor / item / ID..."
+        srch.insert(0, _PLACEHOLDER)
+        srch.bind("<FocusIn>",  lambda e: (srch.delete(0, "end"), srch.config(fg="white"))
+                                           if srch.get() == _PLACEHOLDER else None)
+        srch.bind("<FocusOut>", lambda e: (srch.config(fg="#bfdbfe"),
+                                            srch.insert(0, _PLACEHOLDER),
+                                            self._search_var.set(""))
+                                           if not srch.get().strip() else None)
+
+        # ── KPI cards strip ───────────────────────────────────────────────
+        self._stats_var_total    = tk.StringVar(value="—")
+        self._stats_var_pending  = tk.StringVar(value="—")
+        self._stats_var_approved = tk.StringVar(value="—")
+        self._stats_var_rejected = tk.StringVar(value="—")
+        self._stats_var_hold     = tk.StringVar(value="—")
+        self._stats_var_amount   = tk.StringVar(value="\u20b9—")
+
+        kpi_strip = tk.Frame(main_area, bg=MAIN_BG)
+        kpi_strip.pack(fill="x", padx=14, pady=(12, 4))
+
+        kpi_defs = [
+            ("\U0001f4e6 Total",    self._stats_var_total,    "#e8f0fe", "#1d4ed8"),
+            ("\u23f3 Pending",  self._stats_var_pending,  "#fff7ed", "#c2410c"),
+            ("\u2705 Approved", self._stats_var_approved, "#f0fdf4", "#15803d"),
+            ("\u274c Rejected", self._stats_var_rejected, "#fff1f2", "#be123c"),
+            ("\u23f3 Partial Approved", self._stats_var_hold,     "#fff3cd", "#856404"),
+            ("\u20b9 Amount",   self._stats_var_amount,   "#f0f9ff", "#0369a1"),
+        ]
+        for label, var, card_bg, val_fg in kpi_defs:
+            card = tk.Frame(kpi_strip, bg=card_bg, padx=16, pady=10,
+                            highlightthickness=1, highlightbackground=BORDER,
+                            highlightcolor=BORDER)
+            card.pack(side="left", fill="x", expand=True, padx=4)
+            tk.Label(card, text=label, bg=card_bg, fg="#64748b",
+                     font=("Segoe UI", 8, "bold")).pack(anchor="w")
+            tk.Label(card, textvariable=var, bg=card_bg, fg=val_fg,
+                     font=("Segoe UI", 18, "bold")).pack(anchor="w", pady=(2, 0))
+
+        # ── Action toolbar ────────────────────────────────────────────────
+        toolbar_wrap = tk.Frame(main_area, bg=CARD_BG,
+                                highlightthickness=1, highlightbackground=BORDER)
+        toolbar_wrap.pack(fill="x", padx=14, pady=(0, 6))
+
+        def _tbtn(parent, text, cmd, bg, hov):
+            b = tk.Button(parent, text=text, command=cmd, bg=bg, fg="white",
+                          font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
+                          padx=10, pady=7, bd=0,
+                          activebackground=hov, activeforeground="white")
+            b.bind("<Enter>", lambda e: b.config(bg=hov))
+            b.bind("<Leave>", lambda e: b.config(bg=bg))
+            return b
+
+        def _sep(parent):
+            tk.Frame(parent, bg=BORDER, width=1).pack(side="left", fill="y", padx=5, pady=7)
+
+        _tbtn(toolbar_wrap, "\U0001f504 Sync",          self.sync_from_server,       "#0B2C5F", "#163d7a").pack(side="left", padx=(8, 2))
+        _sep(toolbar_wrap)
+        _tbtn(toolbar_wrap, "\U0001f9fe View Bill",      self.view_bill_selected,     "#155c8a", "#1e7ab8").pack(side="left", padx=2)
+        _tbtn(toolbar_wrap, "\U0001f4e5 Download",       self.download_bill_selected, "#155c8a", "#1e7ab8").pack(side="left", padx=2)
+        _sep(toolbar_wrap)
+        _tbtn(toolbar_wrap, "\u2705 Approve",            self.approve_selected,       "#166534", "#15803d").pack(side="left", padx=2)
+        _tbtn(toolbar_wrap, "\u274c Reject",             self.reject_selected,        "#991b1b", "#b91c1c").pack(side="left", padx=2)
+        _tbtn(toolbar_wrap, "\u23f3 Partial Approved",      self.hold_selected,          "#9a3412", "#c2410c").pack(side="left", padx=2)
+        _tbtn(toolbar_wrap, "\U0001f5d1 Delete",         self.delete_selected,        "#6b1e1e", "#7f1d1d").pack(side="left", padx=2)
+        _sep(toolbar_wrap)
+        _tbtn(toolbar_wrap, "\U0001f4ca Export Excel",   self.export_local_excel,     "#3b0764", "#5b21b6").pack(side="left", padx=2)
+
+        # ── Status filter pills ───────────────────────────────────────────
+        filter_wrap = tk.Frame(main_area, bg=CARD_BG,
+                               highlightthickness=1, highlightbackground=BORDER)
+        filter_wrap.pack(fill="x", padx=14, pady=(0, 6))
+        tk.Label(filter_wrap, text="STATUS", bg=CARD_BG, fg="#94a3b8",
+                 font=("Segoe UI", 8, "bold")).pack(side="left", padx=(12, 6), pady=7)
+
+        self._filter_btns: dict[str, tk.Button] = {}
+        # (label, value, normal_bg, normal_fg, active_bg, active_fg)
+        filter_opts = [
+            ("  All  ",       "",         "#f1f5f9", "#0B2C5F", "#0B2C5F", "#ffffff"),
+            ("  Pending  ",   "Pending",  "#fff7ed", "#9a3412", "#c2410c", "#ffffff"),
+            ("  Approved  ",  "Approved", "#f0fdf4", "#15803d", "#16a34a", "#ffffff"),
+            ("  Rejected  ",  "Rejected", "#fff1f2", "#be123c", "#dc2626", "#ffffff"),
+            ("  Partial Approved  ", "Partial Approved", "#fff3cd", "#856404", "#d97706", "#ffffff"),
+        ]
+        for label, value, nbg, nfg, abg, afg in filter_opts:
+            btn = tk.Button(
+                filter_wrap, text=label, bg=nbg, fg=nfg,
+                font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
+                padx=4, pady=5, bd=0,
+                activebackground=abg, activeforeground=afg,
+                command=lambda v=value: self._apply_status_filter(v),
+            )
+            btn.bind("<Enter>",  lambda e, b=btn, c=abg, f=afg: b.config(bg=c, fg=f))
+            btn.bind("<Leave>",  lambda e, b=btn, v=value, c=nbg, f=nfg: b.config(
+                bg=(abg if v == self._status_filter else c),
+                fg=(afg if v == self._status_filter else f),
+            ) if True else None)
+            btn.pack(side="left", padx=3, pady=5)
+            self._filter_btns[value] = btn
+        self._highlight_filter_btn("")
+
+        # ── Pages container ───────────────────────────────────────────────
+        pages_container = tk.Frame(main_area, bg=MAIN_BG)
+        pages_container.pack(fill="both", expand=True, padx=14, pady=(0, 6))
+
+        self.requests_frame = tk.Frame(pages_container, bg=MAIN_BG)
+        self.bills_frame    = tk.Frame(pages_container, bg=MAIN_BG)
+        self.preview_frame  = tk.Frame(pages_container, bg=MAIN_BG)
+        locations_tab       = tk.Frame(pages_container, bg=MAIN_BG)
+        dashboard_frame     = tk.Frame(pages_container, bg=MAIN_BG)
+
+        self._pages_map = {
+            "dashboard": dashboard_frame,
+            "requests":  self.requests_frame,
+            "bills":     self.bills_frame,
+            "preview":   self.preview_frame,
+            "locations": locations_tab,
+        }
+        self._page_titles = {
+            "dashboard": "\U0001f4ca  Dashboard Overview",
+            "requests":  "\U0001f4cb  Purchase Requests",
+            "bills":     "\U0001f9fe  Bill Uploads",
+            "preview":   "\U0001f5bc  Bill Preview",
+            "locations": "\U0001f3ed  Factory Locations",
+        }
+
+        # Show initial page
+        self.requests_frame.pack(fill="both", expand=True)
+        self._update_nav_active("requests")
 
         cols = (
-            "id",
-            "request_date",
-            "factory_id",
-            "vendor",
-            "item_name",
-            "final_amount",
-            "requested_by",
-            "approval_status",
-            "payment_status",
-            "updated_at",
+            "id", "request_date", "factory_id", "vendor", "item_name",
+            "final_amount", "requested_by", "approval_status",
+            "payment_status", "updated_at",
         )
-        body = ttk.Notebook(self.root)
-        body.pack(fill="both", expand=True, padx=10, pady=10)
-        self.notebook = body
 
-        self.requests_frame = ttk.Frame(body)
-        self.bills_frame = ttk.Frame(body)
-        self.preview_frame = ttk.Frame(body)
-        locations_tab = ttk.Frame(body)
-        
-        body.add(self.requests_frame, text="Requests")
-        body.add(self.bills_frame, text="Bill Uploads")
-        body.add(self.preview_frame, text="Bill Preview")
-        body.add(locations_tab, text="Factory Locations")
+        # ── Requests page ─────────────────────────────────────────────────
+        tree_card = tk.Frame(self.requests_frame, bg=CARD_BG,
+                             highlightthickness=1, highlightbackground=BORDER)
+        tree_card.pack(fill="both", expand=True)
 
-        self.tree = ttk.Treeview(self.requests_frame, columns=cols, show="headings")
-        self.tree.tag_configure("new_request", background="#ffcccc", foreground="#cc0000")
+        self.tree = ttk.Treeview(tree_card, columns=cols, show="headings")
+        self.tree.tag_configure("new_request",     background="#ffe4e4", foreground="#b91c1c")
+        self.tree.tag_configure("status_approved", background="#f0fdf4", foreground="#15803d")
+        self.tree.tag_configure("status_rejected", background="#fff1f2", foreground="#be123c")
+        self.tree.tag_configure("status_pending",  background="#fff7ed", foreground="#c2410c")
+        self.tree.tag_configure("status_hold",     background="#fff3cd", foreground="#856404")
+        self.tree.tag_configure("status_draft",    background="#f8fafc", foreground="#475569")
+
+        col_hdrs = {
+            "id": "ID", "request_date": "Date", "factory_id": "Factory",
+            "vendor": "Vendor", "item_name": "Item Name",
+            "final_amount": "Amount (₹)", "requested_by": "Requested By",
+            "approval_status": "Approval", "payment_status": "Payment",
+            "updated_at": "Updated At",
+        }
         for c in cols:
-            self.tree.heading(c, text=c.replace("_", " ").title())
+            self.tree.heading(c, text=col_hdrs.get(c, c))
 
-        self.tree.column("id", width=70, anchor="center")
-        self.tree.column("request_date", width=110, anchor="center")
-        self.tree.column("factory_id", width=80, anchor="center")
-        self.tree.column("vendor", width=150)
-        self.tree.column("item_name", width=170)
-        self.tree.column("final_amount", width=110, anchor="e")
-        self.tree.column("requested_by", width=140)
-        self.tree.column("approval_status", width=120, anchor="center")
-        self.tree.column("payment_status", width=120, anchor="center")
-        self.tree.column("updated_at", width=170)
+        self.tree.column("id",              width=60,  anchor="center", minwidth=50)
+        self.tree.column("request_date",    width=100, anchor="center", minwidth=80)
+        self.tree.column("factory_id",      width=70,  anchor="center", minwidth=55)
+        self.tree.column("vendor",          width=155, minwidth=100)
+        self.tree.column("item_name",       width=175, minwidth=110)
+        self.tree.column("final_amount",    width=110, anchor="e",      minwidth=80)
+        self.tree.column("requested_by",    width=140, minwidth=100)
+        self.tree.column("approval_status", width=110, anchor="center", minwidth=90)
+        self.tree.column("payment_status",  width=110, anchor="center", minwidth=90)
+        self.tree.column("updated_at",      width=155, minwidth=110)
 
-        vs = ttk.Scrollbar(self.requests_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vs.set)
-        self.tree.pack(side="left", fill="both", expand=True, padx=(0, 0), pady=0)
-        vs.pack(side="right", fill="y", padx=(0, 0), pady=0)
+        vs = ttk.Scrollbar(tree_card, orient="vertical",   command=self.tree.yview)
+        hs = ttk.Scrollbar(tree_card, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        vs.pack(side="right", fill="y")
+        hs.pack(side="bottom", fill="x")
+        self.tree.pack(side="left", fill="both", expand=True)
 
-        bill_cols = (
-            "id",
-            "request_date",
-            "factory_id",
-            "vendor",
-            "requested_by",
-            "approval_status",
-            "updated_at",
-        )
-        self.bill_tree = ttk.Treeview(self.bills_frame, columns=bill_cols, show="headings")
-        self.bill_tree.tag_configure("new_bill", background="#ffcccc", foreground="#cc0000")
+        # ── Bills page ────────────────────────────────────────────────────
+        bill_cols = ("id", "request_date", "factory_id", "vendor",
+                     "requested_by", "approval_status", "updated_at")
+        bill_card = tk.Frame(self.bills_frame, bg=CARD_BG,
+                             highlightthickness=1, highlightbackground=BORDER)
+        bill_card.pack(fill="both", expand=True)
+
+        self.bill_tree = ttk.Treeview(bill_card, columns=bill_cols, show="headings")
+        self.bill_tree.tag_configure("new_bill", background="#ffe4e4", foreground="#b91c1c")
+        bill_hdrs = {"id": "ID", "request_date": "Date", "factory_id": "Factory",
+                     "vendor": "Vendor", "requested_by": "Uploaded By",
+                     "approval_status": "Status", "updated_at": "Updated At"}
         for c in bill_cols:
-            self.bill_tree.heading(c, text=c.replace("_", " ").title())
-
-        self.bill_tree.column("id", width=70, anchor="center")
-        self.bill_tree.column("request_date", width=110, anchor="center")
-        self.bill_tree.column("factory_id", width=80, anchor="center")
-        self.bill_tree.column("vendor", width=220)
-        self.bill_tree.column("requested_by", width=180)
+            self.bill_tree.heading(c, text=bill_hdrs.get(c, c))
+        self.bill_tree.column("id",              width=70,  anchor="center")
+        self.bill_tree.column("request_date",    width=110, anchor="center")
+        self.bill_tree.column("factory_id",      width=80,  anchor="center")
+        self.bill_tree.column("vendor",          width=230)
+        self.bill_tree.column("requested_by",    width=190)
         self.bill_tree.column("approval_status", width=120, anchor="center")
-        self.bill_tree.column("updated_at", width=220)
+        self.bill_tree.column("updated_at",      width=230)
 
-        bill_vs = ttk.Scrollbar(self.bills_frame, orient="vertical", command=self.bill_tree.yview)
+        bill_vs = ttk.Scrollbar(bill_card, orient="vertical", command=self.bill_tree.yview)
         self.bill_tree.configure(yscrollcommand=bill_vs.set)
-        self.bill_tree.pack(side="left", fill="both", expand=True, padx=(0, 0), pady=0)
-        bill_vs.pack(side="right", fill="y", padx=(0, 0), pady=0)
+        bill_vs.pack(side="right", fill="y")
+        self.bill_tree.pack(side="left", fill="both", expand=True)
 
-        preview_top = ttk.Frame(self.preview_frame, padding=(0, 0, 0, 8))
-        preview_top.pack(fill="x")
-        ttk.Label(preview_top, textvariable=self.preview_status, foreground="#1a3a6e").pack(side="left")
-        ttk.Button(preview_top, text="Load Selected Bill", command=self.view_bill_selected).pack(side="right", padx=(6, 0))
-        ttk.Button(preview_top, text="Download", command=self.download_bill_selected).pack(side="right")
+        # ── Preview page ──────────────────────────────────────────────────
+        prev_top = tk.Frame(self.preview_frame, bg=CARD_BG, pady=8,
+                            highlightthickness=1, highlightbackground=BORDER)
+        prev_top.pack(fill="x", pady=(0, 6))
+        ttk.Label(prev_top, textvariable=self.preview_status,
+                  foreground="#0B2C5F").pack(side="left", padx=10)
+        ttk.Button(prev_top, text="Load Bill",  command=self.view_bill_selected).pack(side="right", padx=(6, 10))
+        ttk.Button(prev_top, text="Download",   command=self.download_bill_selected).pack(side="right", padx=2)
+        ttk.Button(prev_top, text="Next ►",     command=self._pdf_next_page).pack(side="right", padx=(0, 2))
+        ttk.Label(prev_top, textvariable=self._pdf_page_label_var,
+                  foreground="#0B2C5F", font=("Segoe UI", 9, "bold"),
+                  width=12, anchor="center").pack(side="right")
+        ttk.Button(prev_top, text="◄ Prev",     command=self._pdf_prev_page).pack(side="right", padx=(10, 0))
 
-        preview_wrap = ttk.Frame(self.preview_frame)
-        preview_wrap.pack(fill="both", expand=True)
-        self.preview_canvas = tk.Canvas(preview_wrap, bg="#ffffff", highlightthickness=0)
-        preview_vs = ttk.Scrollbar(preview_wrap, orient="vertical", command=self.preview_canvas.yview)
-        preview_hs = ttk.Scrollbar(preview_wrap, orient="horizontal", command=self.preview_canvas.xview)
+        prev_wrap = tk.Frame(self.preview_frame, bg=CARD_BG)
+        prev_wrap.pack(fill="both", expand=True)
+        self.preview_canvas = tk.Canvas(prev_wrap, bg="#ffffff", highlightthickness=0)
+        preview_vs = ttk.Scrollbar(prev_wrap, orient="vertical",   command=self.preview_canvas.yview)
+        preview_hs = ttk.Scrollbar(prev_wrap, orient="horizontal", command=self.preview_canvas.xview)
         self.preview_canvas.configure(yscrollcommand=preview_vs.set, xscrollcommand=preview_hs.set)
         self.preview_canvas.grid(row=0, column=0, sticky="nsew")
         preview_vs.grid(row=0, column=1, sticky="ns")
         preview_hs.grid(row=1, column=0, sticky="ew")
-        preview_wrap.rowconfigure(0, weight=1)
-        preview_wrap.columnconfigure(0, weight=1)
+        prev_wrap.rowconfigure(0, weight=1)
+        prev_wrap.columnconfigure(0, weight=1)
         self.preview_canvas.bind("<Configure>", self._on_preview_canvas_resize)
 
-        loc_top = ttk.Frame(locations_tab, padding=(0, 0, 0, 10))
-        loc_top.pack(fill="x")
+        # ── Locations page ────────────────────────────────────────────────
+        loc_top = tk.Frame(locations_tab, bg=CARD_BG, padx=12, pady=8,
+                           highlightthickness=1, highlightbackground=BORDER)
+        loc_top.pack(fill="x", pady=(0, 6))
         ttk.Label(loc_top, text="Factory Name").grid(row=0, column=0, sticky="w")
-        ttk.Entry(loc_top, textvariable=self.factory_name_var, width=28, state="readonly").grid(row=1, column=0, padx=(0, 8), sticky="w")
+        ttk.Entry(loc_top, textvariable=self.factory_name_var, width=28,
+                  state="readonly").grid(row=1, column=0, padx=(0, 8), sticky="w")
         ttk.Label(loc_top, text="Location (lat,long,radius)").grid(row=0, column=1, sticky="w")
-        ttk.Entry(loc_top, textvariable=self.factory_location_var, width=44).grid(row=1, column=1, padx=(0, 8), sticky="w")
-        ttk.Button(loc_top, text="Refresh Locations", command=self.load_factory_locations).grid(row=1, column=2, padx=(0, 6))
-        ttk.Button(loc_top, text="Save Location", command=self.save_factory_location).grid(row=1, column=3, padx=(0, 6))
-        ttk.Button(loc_top, text="Open Map", command=self.open_selected_factory_map).grid(row=1, column=4)
+        ttk.Entry(loc_top, textvariable=self.factory_location_var,
+                  width=44).grid(row=1, column=1, padx=(0, 8), sticky="w")
+        ttk.Button(loc_top, text="Refresh",   command=self.load_factory_locations).grid(row=1, column=2, padx=(0, 5))
+        ttk.Button(loc_top, text="Save",      command=self.save_factory_location).grid(row=1, column=3, padx=(0, 5))
+        ttk.Button(loc_top, text="Open Map",  command=self.open_selected_factory_map).grid(row=1, column=4)
 
+        loc_card = tk.Frame(locations_tab, bg=CARD_BG,
+                            highlightthickness=1, highlightbackground=BORDER)
+        loc_card.pack(fill="both", expand=True)
         loc_cols = ("id", "name", "location", "preview")
-        self.factory_tree = ttk.Treeview(locations_tab, columns=loc_cols, show="headings")
-        self.factory_tree.heading("id", text="ID")
-        self.factory_tree.heading("name", text="Factory")
-        self.factory_tree.heading("location", text="Location")
+        self.factory_tree = ttk.Treeview(loc_card, columns=loc_cols, show="headings")
+        self.factory_tree.heading("id",      text="ID")
+        self.factory_tree.heading("name",    text="Factory")
+        self.factory_tree.heading("location",text="Location")
         self.factory_tree.heading("preview", text="Preview")
-        self.factory_tree.column("id", width=70, anchor="center")
-        self.factory_tree.column("name", width=220)
+        self.factory_tree.column("id",       width=70,  anchor="center")
+        self.factory_tree.column("name",     width=220)
         self.factory_tree.column("location", width=420)
-        self.factory_tree.column("preview", width=300)
+        self.factory_tree.column("preview",  width=310)
         self.factory_tree.bind("<<TreeviewSelect>>", self.on_factory_row_select)
-
-        loc_vs = ttk.Scrollbar(locations_tab, orient="vertical", command=self.factory_tree.yview)
+        loc_vs = ttk.Scrollbar(loc_card, orient="vertical", command=self.factory_tree.yview)
         self.factory_tree.configure(yscrollcommand=loc_vs.set)
-        self.factory_tree.pack(side="left", fill="both", expand=True)
         loc_vs.pack(side="right", fill="y")
+        self.factory_tree.pack(side="left", fill="both", expand=True)
+
+    def _switch_page(self, page_id: str) -> None:
+        for frame in self._pages_map.values():
+            frame.pack_forget()
+        target = self._pages_map.get(page_id)
+        if target is not None:
+            target.pack(fill="both", expand=True)
+        self._active_page = page_id
+        self._update_nav_active(page_id)
+        title = self._page_titles.get(page_id, page_id.title())
+        if hasattr(self, "_page_title_var"):
+            self._page_title_var.set(title)
+
+    def _update_nav_active(self, active: str) -> None:
+        for pid, btn in self._nav_btns.items():
+            if pid == active:
+                btn.config(bg=self._S_ACTIVE, fg="#ffffff")
+            else:
+                btn.config(bg=self._S_BG, fg=self._S_TEXT)
+
+    def _apply_search_filter(self) -> None:
+        if not hasattr(self, "_last_server_items"):
+            return
+        query = self._search_var.get().strip().lower()
+        if not query or query.startswith("\U0001f50d"):
+            self._populate_from_server_items(self._last_server_items)
+            return
+        filtered = [
+            x for x in self._last_server_items
+            if not self._is_simple_bill_upload_item(x) and any(
+                query in str(x.get(f) or "").lower()
+                for f in ("id", "vendor", "item_name", "requested_by", "approval_status")
+            )
+        ]
+        self._populate_from_server_items(filtered)
 
     def _server_url(self) -> str:
         url = DEFAULT_BASE_URL.rstrip("/")
@@ -343,6 +663,22 @@ class AdminLocalClient:
                 self.set_connection_state(False)
                 self.status_text.set("Login failed")
                 messagebox.showerror("Login", f"Login failed: HTTP {response.status_code}")
+                return
+            redirect_to = (response.headers.get("Location") or "").strip()
+            if redirect_to.startswith("http"):
+                try:
+                    redirect_to = urljoin(base + "/", redirect_to)
+                except Exception:
+                    redirect_to = "/"
+            if str(redirect_to).endswith("/login") or str(redirect_to) == "/login":
+                self.set_connection_state(False)
+                messagebox.showerror("Login", "Invalid username or password")
+                return
+
+            auth_check = self.session.get(f"{base}/requests", timeout=20)
+            if auth_check.status_code != 200:
+                self.set_connection_state(False)
+                messagebox.showerror("Login", "Login succeeded but session validation failed. Please try again.")
                 return
             self.logged_in = True
             self.set_connection_state(True)
@@ -415,6 +751,7 @@ class AdminLocalClient:
         new_bill_count = 0
         first_new_request_added = False
         first_new_bill_added = False
+        bills_to_receive: list[int] = []
 
         for it in items:
             req_id = int(it.get("id", 0))
@@ -426,19 +763,39 @@ class AdminLocalClient:
                               it.get("vendor"), it.get("item_name"), it.get("final_amount"),
                               it.get("requested_by"), it.get("approval_status"),
                               it.get("payment_status"), it.get("updated_at"))
+            # Bill uploads always show "Received" — no approve/reject flow needed
             bill_row_values = (req_id, it.get("request_date"), it.get("factory_id"),
                                it.get("vendor"), it.get("requested_by"),
-                               it.get("approval_status"), it.get("updated_at"))
+                               "Received", it.get("updated_at"))
 
             if is_simple_bill:
                 tag = "new_bill" if (is_new and not first_new_bill_added) else ""
                 self.bill_tree.insert("", "end", values=bill_row_values, tags=(tag,) if tag else ())
+                # Auto-mark on server if not yet received
+                if (it.get("approval_status") or "") != "Received":
+                    bills_to_receive.append(req_id)
                 if is_new:
                     new_bill_count += 1
                     first_new_bill_added = True
             else:
-                tag = "new_request" if (is_new and not first_new_request_added) else ""
-                self.tree.insert("", "end", values=req_row_values, tags=(tag,) if tag else ())
+                approval_status = (it.get("approval_status") or "").strip()
+                # Backward compat: old server may still return "Hold"
+                if approval_status == "Hold":
+                    approval_status = "Partial Approved"
+                if self._status_filter and approval_status != self._status_filter:
+                    continue
+                if is_new and not first_new_request_added:
+                    row_tag = "new_request"
+                else:
+                    row_tag = {
+                        "Approved":         "status_approved",
+                        "Rejected":         "status_rejected",
+                        "Pending":          "status_pending",
+                        "Partial Approved": "status_hold",
+                        "Draft":            "status_draft",
+                    }.get(approval_status, "")
+                self.tree.insert("", "end", values=req_row_values,
+                                 tags=(row_tag,) if row_tag else ())
                 if is_new:
                     new_req_count += 1
                     first_new_request_added = True
@@ -446,19 +803,93 @@ class AdminLocalClient:
         self.new_requests_count = new_req_count
         self.new_bills_count = new_bill_count
         self._update_tab_labels()
+        self._update_stats_bar(items)
+
+        if bills_to_receive and self.logged_in:
+            threading.Thread(
+                target=self._mark_bills_received,
+                args=(bills_to_receive,),
+                daemon=True,
+            ).start()
+
+    def _mark_bills_received(self, bill_ids: list[int]) -> None:
+        """Background thread: mark bill uploads as Received on the server."""
+        base = DEFAULT_BASE_URL.rstrip("/")
+        for req_id in bill_ids:
+            try:
+                self.session.post(f"{base}/requests/{req_id}/receive", timeout=10)
+            except Exception:
+                pass
+
+    def _apply_status_filter(self, status: str) -> None:
+        self._status_filter = status
+        self._highlight_filter_btn(status)
+        self._populate_from_server_items(self._last_server_items)
+
+    def _highlight_filter_btn(self, active: str) -> None:
+        normal = {
+            "":                 ("#f1f5f9", "#0B2C5F"),
+            "Pending":          ("#fff7ed", "#9a3412"),
+            "Approved":         ("#f0fdf4", "#15803d"),
+            "Rejected":         ("#fff1f2", "#be123c"),
+            "Partial Approved": ("#fff3cd", "#856404"),
+        }
+        selected = {
+            "":                 ("#0B2C5F", "#ffffff"),
+            "Pending":          ("#c2410c", "#ffffff"),
+            "Approved":         ("#16a34a", "#ffffff"),
+            "Rejected":         ("#dc2626", "#ffffff"),
+            "Partial Approved": ("#d97706", "#ffffff"),
+        }
+        for value, btn in self._filter_btns.items():
+            if value == active:
+                bg, fg = selected.get(value, ("#0B2C5F", "#ffffff"))
+            else:
+                bg, fg = normal.get(value, ("#f1f5f9", "#0B2C5F"))
+            btn.config(bg=bg, fg=fg, relief="flat", bd=0)
 
     # kept for compatibility but no longer used for display — only viewed_at is written to SQLite
     def save_requests_to_db(self, items: list[dict]) -> None:
         pass
 
     def _update_tab_labels(self) -> None:
-        """Update tab labels with notification badges."""
-        if not self.notebook or not self.requests_frame or not self.bills_frame:
+        """Update sidebar nav button labels with notification badges."""
+        if not hasattr(self, "_nav_btns"):
             return
-        req_label = f"Requests" + (f" ({self.new_requests_count})" if self.new_requests_count > 0 else "")
-        bill_label = f"Bill Uploads" + (f" ({self.new_bills_count})" if self.new_bills_count > 0 else "")
-        self.notebook.tab(self.requests_frame, text=req_label)
-        self.notebook.tab(self.bills_frame, text=bill_label)
+        req_btn  = self._nav_btns.get("requests")
+        bill_btn = self._nav_btns.get("bills")
+        req_suffix  = f" ({self.new_requests_count})" if self.new_requests_count > 0 else ""
+        bill_suffix = f" ({self.new_bills_count})"    if self.new_bills_count > 0    else ""
+        if req_btn:
+            req_btn.config(text=f"  \U0001f4cb   Requests{req_suffix}")
+        if bill_btn:
+            bill_btn.config(text=f"  \U0001f9fe   Bill Uploads{bill_suffix}")
+
+    def _update_stats_bar(self, items: list[dict]) -> None:
+        """Refresh the live stats tiles from the current item list."""
+        if not hasattr(self, "_stats_var_total"):
+            return
+        non_bills = [x for x in items if not self._is_simple_bill_upload_item(x)]
+        total    = len(non_bills)
+        pending  = sum(1 for x in non_bills if (x.get("approval_status") or "") == "Pending")
+        approved = sum(1 for x in non_bills if (x.get("approval_status") or "") == "Approved")
+        rejected = sum(1 for x in non_bills if (x.get("approval_status") or "") == "Rejected")
+        hold     = sum(1 for x in non_bills if (x.get("approval_status") or "") in ("Partial Approved", "Hold"))
+
+        # Amount reflects only the active filter subset
+        active_filter = getattr(self, "_status_filter", "")
+        if active_filter:
+            amount_items = [x for x in non_bills if (x.get("approval_status") or "") == active_filter]
+        else:
+            amount_items = non_bills
+        amount = sum(float(x.get("final_amount") or 0) for x in amount_items)
+
+        self._stats_var_total.set(str(total))
+        self._stats_var_pending.set(str(pending))
+        self._stats_var_approved.set(str(approved))
+        self._stats_var_rejected.set(str(rejected))
+        self._stats_var_hold.set(str(hold))
+        self._stats_var_amount.set(f"\u20b9{amount:,.0f}")
 
     def _mark_item_as_viewed(self, req_id: int) -> None:
         """Track viewed IDs in-memory only and refresh the current server-backed view."""
@@ -614,6 +1045,9 @@ class AdminLocalClient:
             vals = self.bill_tree.item(bill_item, "values")
             if vals:
                 req_id = int(vals[0])
+        # Fallback: use the bill currently loaded in preview
+        if req_id is None and self.preview_req_id is not None:
+            req_id = self.preview_req_id
         if req_id is None:
             messagebox.showwarning("Select", "Select a request or bill upload first.")
             return None
@@ -721,12 +1155,12 @@ class AdminLocalClient:
         if req_id is None:
             return
         self.open_text_action_dialog(
-            title="Hold Request",
+            title="Partial Approved Request",
             req_id=req_id,
             path_template="/requests/{req_id}/hold",
             field_name="remarks",
-            field_label="Hold Remarks",
-            submit_text="Move to Hold",
+            field_label="Partial Approved Remarks",
+            submit_text="Mark as Partial Approved",
             required=False,
         )
 
@@ -832,8 +1266,7 @@ class AdminLocalClient:
         # If the same bill is already loaded in preview, avoid refetching and reuse it.
         if req_id == self.preview_req_id and (self._preview_pil_image is not None or self._preview_photo is not None):
             self.preview_status.set(f"Previewing request #{req_id} - {self.preview_filename}")
-            if self.notebook and self.preview_frame:
-                self.notebook.select(self.preview_frame)
+            self._switch_page("preview")
             return
 
         resp, filename, err = self._fetch_bill_response(req_id, stream=False)
@@ -848,8 +1281,7 @@ class AdminLocalClient:
         self.preview_filename = filename
         self._render_bill_preview(content, filename, resp.headers.get("Content-Type", ""))
         self.preview_status.set(f"Previewing request #{req_id} - {filename}")
-        if self.notebook and self.preview_frame:
-            self.notebook.select(self.preview_frame)
+        self._switch_page("preview")
 
     def download_bill_selected(self) -> None:
         req_id = self.selected_request_id_any()
@@ -962,6 +1394,11 @@ class AdminLocalClient:
         lower_name = filename.lower()
         ctype = (content_type or "").lower()
 
+        # Reset PDF state for every new load
+        self._pdf_pages = []
+        self._pdf_current_page = 0
+        self._pdf_page_label_var.set("")
+
         # ── PDF Preview ──
         if lower_name.endswith(".pdf") or "application/pdf" in ctype:
             if fitz is None:
@@ -972,15 +1409,15 @@ class AdminLocalClient:
                 if pdf_doc.page_count == 0:
                     self._show_preview_message("PDF is empty.")
                     return
-                # Render first page to image
-                page = pdf_doc[0]
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for clarity
-                img_data = pix.tobytes("ppm")
-                img = Image.open(io.BytesIO(img_data))
-                self._preview_pil_image = img
-                self._redraw_preview_image()
-                self.preview_status.set(f"PDF preview (page 1 of {pdf_doc.page_count}) — {filename}")
+                # Render all pages up-front
+                for page_num in range(pdf_doc.page_count):
+                    page = pdf_doc[page_num]
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for clarity
+                    img = Image.open(io.BytesIO(pix.tobytes("ppm")))
+                    img.load()   # force decode before the doc is closed
+                    self._pdf_pages.append(img)
                 pdf_doc.close()
+                self._show_pdf_page(0)
                 return
             except Exception as exc:
                 self._show_preview_message(f"Failed to render PDF: {exc}")
@@ -997,6 +1434,27 @@ class AdminLocalClient:
             self._redraw_preview_image()
         except Exception:
             self._show_preview_message("This file type is not previewable. Use Download Bill.")
+
+    def _show_pdf_page(self, page_num: int) -> None:
+        if not self._pdf_pages:
+            return
+        page_num = max(0, min(page_num, len(self._pdf_pages) - 1))
+        self._pdf_current_page = page_num
+        total = len(self._pdf_pages)
+        self._preview_pil_image = self._pdf_pages[page_num]
+        self._pdf_page_label_var.set(f"Page {page_num + 1} / {total}")
+        self._redraw_preview_image()
+        self.preview_status.set(
+            f"PDF — Page {page_num + 1} of {total} — {self.preview_filename}"
+        )
+
+    def _pdf_prev_page(self) -> None:
+        if self._pdf_pages and self._pdf_current_page > 0:
+            self._show_pdf_page(self._pdf_current_page - 1)
+
+    def _pdf_next_page(self) -> None:
+        if self._pdf_pages and self._pdf_current_page < len(self._pdf_pages) - 1:
+            self._show_pdf_page(self._pdf_current_page + 1)
 
     def _on_preview_canvas_resize(self, _event=None) -> None:
         if self._preview_pil_image is not None:
