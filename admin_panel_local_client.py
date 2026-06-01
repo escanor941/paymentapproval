@@ -1237,9 +1237,11 @@ class AdminLocalClient:
         _field("Purpose",           item_data.get("purpose"))
         _field("Completion Status", item_data.get("completion_status"))
         _field("Completion Remark", item_data.get("completion_remark"))
-        _field("Vehicle Number",    item_data.get("completion_vehicle_number"))
-        _field("Transporter",       item_data.get("completion_transporter_name"))
+        _field("Submitted By",      item_data.get("completion_submitted_by_name"))
         _field("Submitted At",      item_data.get("completion_submitted_at"))
+        _field("Vendor Bill",       "Uploaded" if item_data.get("vendor_bill_path") else "—")
+        _field("Company Voucher",   "Uploaded" if item_data.get("company_voucher_path") else "—")
+        _field("Reopen Reason",     item_data.get("reopen_reason"))
         _field("Verified By",       item_data.get("verified_by"))
         _field("Verified At",       item_data.get("verified_at"))
         _field("Closing Remark",    item_data.get("verified_remark"))
@@ -1623,25 +1625,83 @@ class AdminLocalClient:
         req_id = self.selected_request_id()
         if req_id is None:
             return
-        if not messagebox.askyesno("Reopen", f"Reopen completion for request #{req_id}?\n"
-                                   "The factory user will need to resubmit completion."):
-            return
-        success, message = self._perform_action(f"/requests/{req_id}/reopen", {})
-        if success:
-            self.sync_from_server(silent=True)
-            messagebox.showinfo("Reopen", message)
-        else:
-            messagebox.showerror("Reopen", message)
 
-    def open_verify_dialog(self, req_id: int) -> None:
+        # Prompt admin for an optional reason before reopening
         dialog = tk.Toplevel(self.root)
-        dialog.title(f"Verify & Close — Request #{req_id}")
-        dialog.geometry("460x280")
+        dialog.title(f"Reopen Completion — Request #{req_id}")
+        dialog.geometry("420x220")
         dialog.resizable(False, False)
         dialog.transient(self.root)
         dialog.grab_set()
-        ttk.Label(dialog, text="Closing Remarks (optional)", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(14, 4))
-        remarks_box = tk.Text(dialog, height=6)
+
+        ttk.Label(dialog, text=f"Reopen completion for request #{req_id}.\n"
+                  "The factory user will need to resubmit completion.",
+                  wraplength=390, justify="left").pack(anchor="w", padx=14, pady=(12, 6))
+        ttk.Label(dialog, text="Reason (will be shown to factory user):", font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(2, 2))
+        reason_box = tk.Text(dialog, height=3, wrap="word")
+        reason_box.pack(fill="x", padx=14)
+        status_var = tk.StringVar(value="")
+        status_lbl = ttk.Label(dialog, textvariable=status_var, wraplength=390, justify="left")
+        status_lbl.pack(fill="x", padx=14, pady=(4, 0))
+
+        def on_confirm():
+            reason = reason_box.get("1.0", "end").strip()
+            try:
+                base = self._server_url()
+            except RuntimeError as exc:
+                status_var.set(str(exc)); status_lbl.configure(foreground="#b02a37"); return
+            import requests as _req_lib
+            fd = {"reason": reason} if reason else {}
+            try:
+                r = self.session.post(f"{base}/requests/{req_id}/reopen", data=fd, timeout=15)
+                body = r.json() if r.headers.get("Content-Type", "").startswith("application/json") else {}
+                if r.status_code == 200:
+                    self.sync_from_server(silent=True)
+                    dialog.destroy()
+                    messagebox.showinfo("Reopen", body.get("message", "Reopened successfully."))
+                else:
+                    status_var.set(body.get("detail", f"HTTP {r.status_code}"))
+                    status_lbl.configure(foreground="#b02a37")
+            except Exception as exc:
+                status_var.set(f"Error: {exc}"); status_lbl.configure(foreground="#b02a37")
+
+        btn_row = ttk.Frame(dialog)
+        btn_row.pack(fill="x", padx=14, pady=10)
+        ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(btn_row, text="Reopen", command=on_confirm).pack(side="right")
+        dialog.wait_window()
+
+    def open_verify_dialog(self, req_id: int) -> None:
+        # Look up cached request data for completion info
+        req_data: dict = {}
+        for item in getattr(self, "_last_server_items", []):
+            if item.get("id") == req_id:
+                req_data = item; break
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Verify & Close — Request #{req_id}")
+        dialog.geometry("480x420")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Completion summary
+        info_frame = ttk.LabelFrame(dialog, text="Completion Details", padding=8)
+        info_frame.pack(fill="x", padx=14, pady=(12, 0))
+        def _info_row(label: str, value: str):
+            row = ttk.Frame(info_frame)
+            row.pack(fill="x", pady=1)
+            ttk.Label(row, text=f"{label}:", width=18, anchor="w",
+                      font=("Segoe UI", 9, "bold")).pack(side="left")
+            ttk.Label(row, text=value or "—", wraplength=300, justify="left").pack(side="left")
+        _info_row("Completion Remark", req_data.get("completion_remark") or "—")
+        _info_row("Submitted By",      req_data.get("completion_submitted_by_name") or "—")
+        _info_row("Submitted At",      req_data.get("completion_submitted_at") or "—")
+        _info_row("Vendor Bill",       "✓ Uploaded" if req_data.get("vendor_bill_path") else "✗ None")
+        _info_row("Company Voucher",   "✓ Uploaded" if req_data.get("company_voucher_path") else "✗ None")
+
+        ttk.Label(dialog, text="Closing Remarks (optional)", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(12, 4))
+        remarks_box = tk.Text(dialog, height=5)
         remarks_box.pack(fill="both", expand=True, padx=14)
         status_var = tk.StringVar(value="")
         status_label = ttk.Label(dialog, textvariable=status_var, wraplength=420, justify="left")

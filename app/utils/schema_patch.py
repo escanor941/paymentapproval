@@ -14,14 +14,16 @@ REQUIRED_PURCHASE_REQUEST_COLUMNS = {
     "completion_status": "ALTER TABLE purchase_requests ADD COLUMN completion_status VARCHAR(30) DEFAULT 'Pending'",
     "completion_remark": "ALTER TABLE purchase_requests ADD COLUMN completion_remark TEXT",
     "completion_bill_path": "ALTER TABLE purchase_requests ADD COLUMN completion_bill_path VARCHAR(255)",
-    "completion_vehicle_number": "ALTER TABLE purchase_requests ADD COLUMN completion_vehicle_number VARCHAR(50)",
-    "completion_transporter_name": "ALTER TABLE purchase_requests ADD COLUMN completion_transporter_name VARCHAR(120)",
+    "vendor_bill_path": "ALTER TABLE purchase_requests ADD COLUMN vendor_bill_path VARCHAR(255)",
+    "company_voucher_path": "ALTER TABLE purchase_requests ADD COLUMN company_voucher_path VARCHAR(255)",
+    "completion_submitted_by_name": "ALTER TABLE purchase_requests ADD COLUMN completion_submitted_by_name VARCHAR(120)",
     "completion_submitted_at": "ALTER TABLE purchase_requests ADD COLUMN completion_submitted_at TIMESTAMP",
     # Admin verification workflow
     "verified_by": "ALTER TABLE purchase_requests ADD COLUMN verified_by INTEGER",
     "verified_at": "ALTER TABLE purchase_requests ADD COLUMN verified_at TIMESTAMP",
     "verified_remark": "ALTER TABLE purchase_requests ADD COLUMN verified_remark TEXT",
     "closed_by": "ALTER TABLE purchase_requests ADD COLUMN closed_by INTEGER",
+    "reopen_reason": "ALTER TABLE purchase_requests ADD COLUMN reopen_reason TEXT",
 }
 
 

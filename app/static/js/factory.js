@@ -305,7 +305,7 @@ async function loadOwnRequests() {
         <td>${item.request_type || item.item_category || ''}</td>
         <td>${escHtml(item.purpose || item.reason || '')}</td>
         <td>₹${fmtAmt(item.final_amount)}</td>
-        <td><button class="btn btn-sm btn-success" onclick="openCompletionModal(${item.id}, '${escHtml(item.request_type || item.item_category || '')}')">Submit Completion</button></td>
+        <td><button class="btn btn-sm btn-success" onclick="openCompletionModal(${item.id})">Submit Completion</button></td>
       `;
       awaitingTableBody.appendChild(tr);
     });
@@ -331,7 +331,7 @@ async function loadOwnRequests() {
       <td data-label="Completion">${completionBadge(completionSt)}</td>
       <td data-label="Actions" class="actions-cell">
         ${canDelete ? `<button class="btn btn-sm btn-outline-danger" onclick="deleteOwn(${item.id})">Delete</button>` : ''}
-        ${canComplete ? `<button class="btn btn-sm btn-success" onclick="openCompletionModal(${item.id}, '${escHtml(item.request_type || item.item_category || '')}')">Complete</button>` : ''}
+        ${canComplete ? `<button class="btn btn-sm btn-success" onclick="openCompletionModal(${item.id})">Complete</button>` : ''}
         ${item.bill_image_path ? `<a class="btn btn-sm btn-outline-secondary" target="_blank" href="/requests/${item.id}/bill">Bill</a>` : ''}
         ${item.completion_bill_path ? `<a class="btn btn-sm btn-outline-info" target="_blank" href="${item.completion_bill_path}">Inv</a>` : ''}
       </td>
@@ -364,34 +364,39 @@ window.deleteOwn = deleteOwn;
 // ---- Completion Modal ----
 let completionModalInstance = null;
 
-function openCompletionModal(requestId, requestType) {
-  document.getElementById('completionRequestId').value = requestId;
+async function openCompletionModal(requestId) {
+  // Reset form
   document.getElementById('completionRemark').value = '';
   document.getElementById('completionFlash').innerHTML = '';
   document.getElementById('completionForm').reset();
   document.getElementById('completionRequestId').value = requestId;
 
-  // Show/hide type-specific fields
-  const transportFields = document.getElementById('transportFields');
-  const fileField = document.getElementById('completionFileField');
-  const fileLabel = document.getElementById('completionFileLabel');
-
-  transportFields.style.display = requestType === 'Transport' ? '' : 'none';
-  if (requestType === 'Material') {
-    fileField.style.display = '';
-    fileLabel.textContent = 'Upload Bill (Optional)';
-  } else if (requestType === 'Service') {
-    fileField.style.display = '';
-    fileLabel.textContent = 'Upload Invoice (Optional)';
-  } else {
-    fileField.style.display = 'none';
-  }
+  // Clear autofill
+  document.getElementById('cfReqNo').textContent = '#' + requestId;
+  document.getElementById('cfType').textContent = '…';
+  document.getElementById('cfPurpose').textContent = '…';
+  document.getElementById('cfRequested').textContent = '…';
+  document.getElementById('cfApproved').textContent = '…';
+  document.getElementById('cfPaid').textContent = '…';
 
   if (!completionModalInstance) {
     const el = document.getElementById('completionModal');
     completionModalInstance = new bootstrap.Modal(el);
   }
   completionModalInstance.show();
+
+  // Fetch request details for autofill
+  try {
+    const res = await fetch(`/requests/${requestId}/detail`);
+    if (res.ok) {
+      const d = await res.json();
+      document.getElementById('cfType').textContent = d.request_type || d.item_category || '—';
+      document.getElementById('cfPurpose').textContent = d.purpose || d.item_name || '—';
+      document.getElementById('cfRequested').textContent = parseFloat(d.final_amount || 0).toFixed(2);
+      document.getElementById('cfApproved').textContent = parseFloat(d.approved_amount || d.final_amount || 0).toFixed(2);
+      document.getElementById('cfPaid').textContent = parseFloat(d.total_paid || 0).toFixed(2);
+    }
+  } catch (_) {}
 }
 window.openCompletionModal = openCompletionModal;
 
@@ -402,6 +407,14 @@ async function submitCompletion() {
 
   if (!remark) {
     showCompletionFlash('Completion remark is required.', 'danger');
+    return;
+  }
+
+  // Validate: at least one document
+  const vendorBill = document.getElementById('vendorBillInput')?.files?.[0];
+  const companyVoucher = document.getElementById('companyVoucherInput')?.files?.[0];
+  if (!vendorBill && !companyVoucher) {
+    showCompletionFlash('Please upload Vendor Bill or Company Voucher before submitting completion.', 'danger');
     return;
   }
 

@@ -846,73 +846,127 @@ class FactoryLocalClient:
     def open_completion_dialog(self, req_id: int) -> None:
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Submit Completion — Request #{req_id}")
-        dialog.geometry("500x400")
+        dialog.geometry("540x560")
         dialog.resizable(False, False)
         dialog.transient(self.root)
         dialog.grab_set()
 
-        veh_var   = tk.StringVar(value="")
-        trans_var = tk.StringVar(value="")
-        file_var  = tk.StringVar(value="")
+        vendor_bill_var  = tk.StringVar(value="")
+        voucher_var      = tk.StringVar(value="")
 
-        ttk.Label(dialog, text="Completion Remark *", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(14, 4))
-        remark_box = tk.Text(dialog, height=5)
+        # ── Autofill summary ──────────────────────────────────────────────
+        summary_frame = ttk.LabelFrame(dialog, text="Request Summary", padding=8)
+        summary_frame.pack(fill="x", padx=14, pady=(12, 0))
+        grid = summary_frame
+        lbl_style = {"font": ("Segoe UI", 9, "bold"), "foreground": "#555"}
+        val_style = {"font": ("Segoe UI", 10, "bold"), "foreground": "#1a1a1a"}
+
+        req_no_val    = tk.StringVar(value=f"#{req_id}")
+        req_type_val  = tk.StringVar(value="…")
+        purpose_val   = tk.StringVar(value="…")
+        requested_val = tk.StringVar(value="…")
+        approved_val  = tk.StringVar(value="…")
+
+        for row_idx, (lbl, var) in enumerate([
+            ("Request No",       req_no_val),
+            ("Type",             req_type_val),
+            ("Purpose",          purpose_val),
+            ("Requested (₹)",   requested_val),
+            ("Approved (₹)",    approved_val),
+        ]):
+            tk.Label(grid, text=lbl, **lbl_style).grid(row=row_idx, column=0, sticky="w", padx=(4, 8), pady=1)
+            tk.Label(grid, textvariable=var, **val_style).grid(row=row_idx, column=1, sticky="w", pady=1)
+
+        # ── Completion Remark ─────────────────────────────────────────────
+        ttk.Label(dialog, text="Completion Remark *", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(12, 2))
+        remark_box = tk.Text(dialog, height=4, wrap="word")
         remark_box.pack(fill="x", padx=14)
 
-        ttk.Label(dialog, text="Vehicle Number (optional)", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(10, 4))
-        ttk.Entry(dialog, textvariable=veh_var).pack(fill="x", padx=14)
+        # ── Document Upload ───────────────────────────────────────────────
+        doc_frame = ttk.LabelFrame(dialog, text="Documents (at least ONE required)", padding=8)
+        doc_frame.pack(fill="x", padx=14, pady=(10, 0))
 
-        ttk.Label(dialog, text="Transporter Name (optional)", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(10, 4))
-        ttk.Entry(dialog, textvariable=trans_var).pack(fill="x", padx=14)
+        ttk.Label(doc_frame, text="Vendor Bill (optional):", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        vb_row = ttk.Frame(doc_frame)
+        vb_row.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        doc_frame.columnconfigure(0, weight=1)
+        vb_row.columnconfigure(0, weight=1)
+        ttk.Entry(vb_row, textvariable=vendor_bill_var, state="readonly").pack(side="left", fill="x", expand=True, padx=(0, 4))
+        def _browse_vendor_bill():
+            p = filedialog.askopenfilename(title="Select Vendor Bill",
+                filetypes=[("Images & PDFs", "*.jpg *.jpeg *.png *.pdf"), ("All", "*.*")])
+            if p: vendor_bill_var.set(p)
+        ttk.Button(vb_row, text="Browse", command=_browse_vendor_bill).pack(side="left")
 
-        file_row = ttk.Frame(dialog)
-        file_row.pack(fill="x", padx=14, pady=(10, 0))
-        ttk.Label(file_row, text="Completion Bill (optional):", font=("Segoe UI", 10, "bold")).pack(side="left")
-        ttk.Entry(file_row, textvariable=file_var, state="readonly", width=30).pack(side="left", padx=(6, 4))
-        def _browse():
-            path = filedialog.askopenfilename(title="Select Bill Image",
-                filetypes=[("Images & PDFs", "*.jpg *.jpeg *.png *.pdf"), ("All files", "*.*")])
-            if path:
-                file_var.set(path)
-        ttk.Button(file_row, text="Browse", command=_browse).pack(side="left")
+        ttk.Label(doc_frame, text="Company Voucher (optional):", font=("Segoe UI", 9, "bold")).grid(row=2, column=0, sticky="w", pady=(4, 4))
+        cv_row = ttk.Frame(doc_frame)
+        cv_row.grid(row=3, column=0, sticky="ew")
+        cv_row.columnconfigure(0, weight=1)
+        ttk.Entry(cv_row, textvariable=voucher_var, state="readonly").pack(side="left", fill="x", expand=True, padx=(0, 4))
+        def _browse_voucher():
+            p = filedialog.askopenfilename(title="Select Company Voucher",
+                filetypes=[("Images & PDFs", "*.jpg *.jpeg *.png *.pdf"), ("All", "*.*")])
+            if p: voucher_var.set(p)
+        ttk.Button(cv_row, text="Browse", command=_browse_voucher).pack(side="left")
 
+        # ── Status label ──────────────────────────────────────────────────
         status_var = tk.StringVar(value="")
-        status_lbl = ttk.Label(dialog, textvariable=status_var, wraplength=460, justify="left")
+        status_lbl = ttk.Label(dialog, textvariable=status_var, wraplength=490, justify="left")
         status_lbl.pack(fill="x", padx=14, pady=(8, 0))
 
+        # ── Autofill from server ──────────────────────────────────────────
+        def _load_autofill():
+            try:
+                base = DEFAULT_BASE_URL.rstrip("/")
+                r = self.session.get(f"{base}/requests/{req_id}/detail", timeout=10)
+                if r.status_code == 200:
+                    d = r.json()
+                    req_type_val.set(d.get("request_type") or d.get("item_category") or "—")
+                    purpose_val.set((d.get("purpose") or d.get("item_name") or "—")[:60])
+                    requested_val.set(f"₹{float(d.get('final_amount') or 0):.2f}")
+                    approved_val.set(f"₹{float(d.get('approved_amount') or d.get('final_amount') or 0):.2f}")
+            except Exception:
+                pass
+        import threading
+        threading.Thread(target=_load_autofill, daemon=True).start()
+
+        # ── Submit ────────────────────────────────────────────────────────
         def on_submit() -> None:
             remark = remark_box.get("1.0", "end").strip()
             if not remark:
                 status_var.set("Completion remark is required.")
-                status_lbl.configure(foreground="#b02a37")
-                return
+                status_lbl.configure(foreground="#b02a37"); return
+
+            vb_path = vendor_bill_var.get().strip()
+            cv_path = voucher_var.get().strip()
+            if not vb_path and not cv_path:
+                status_var.set("Please upload Vendor Bill or Company Voucher before submitting completion.")
+                status_lbl.configure(foreground="#b02a37"); return
+
             if not self.logged_in:
                 status_var.set("Please login first.")
-                status_lbl.configure(foreground="#b02a37")
-                return
+                status_lbl.configure(foreground="#b02a37"); return
             try:
                 base = self._server_url()
             except RuntimeError as exc:
                 status_var.set(str(exc))
-                status_lbl.configure(foreground="#b02a37")
-                return
+                status_lbl.configure(foreground="#b02a37"); return
 
             data = {"completion_remark": remark}
-            if veh_var.get().strip():
-                data["vehicle_number"] = veh_var.get().strip()
-            if trans_var.get().strip():
-                data["transporter_name"] = trans_var.get().strip()
-
-            file_path = file_var.get().strip()
             files = {}
-            file_handle = None
-            if file_path and Path(file_path).exists():
-                file_handle = open(file_path, "rb")
-                files = {"completion_file": file_handle}
-
-            status_var.set("Submitting…")
-            status_lbl.configure(foreground="#555")
+            file_handles = []
             try:
+                if vb_path and Path(vb_path).exists():
+                    fh = open(vb_path, "rb")
+                    file_handles.append(fh)
+                    files["vendor_bill"] = fh
+                if cv_path and Path(cv_path).exists():
+                    fh2 = open(cv_path, "rb")
+                    file_handles.append(fh2)
+                    files["company_voucher"] = fh2
+
+                status_var.set("Submitting…")
+                status_lbl.configure(foreground="#555")
                 r = self.session.post(f"{base}/requests/{req_id}/complete",
                                       data=data, files=files or None, timeout=30)
                 body = r.json() if r.headers.get("Content-Type", "").startswith("application/json") else {}
@@ -923,16 +977,15 @@ class FactoryLocalClient:
                     self.root.after(1000, dialog.destroy)
                 else:
                     detail = body.get("detail", f"HTTP {r.status_code}")
-                    if isinstance(detail, list):
-                        detail = detail[0].get("msg", str(detail))
+                    if isinstance(detail, list): detail = detail[0].get("msg", str(detail))
                     status_var.set(str(detail))
                     status_lbl.configure(foreground="#b02a37")
             except Exception as exc:
                 status_var.set(f"Error: {exc}")
                 status_lbl.configure(foreground="#b02a37")
             finally:
-                if file_handle:
-                    file_handle.close()
+                for fh in file_handles:
+                    fh.close()
 
         btn_row = ttk.Frame(dialog)
         btn_row.pack(fill="x", padx=14, pady=12)

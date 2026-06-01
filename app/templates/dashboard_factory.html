@@ -126,41 +126,54 @@
 
 <!-- ===== COMPLETION MODAL ===== -->
 <div class="modal fade" id="completionModal" tabindex="-1" aria-labelledby="completionModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg">
         <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="completionModalLabel">Submit Completion Details</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            <div class="modal-header bg-success text-white">
+                <h5 class="modal-title" id="completionModalLabel">✅ Submit Completion Details</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
                 <div id="completionFlash" class="mb-2"></div>
+                <!-- Autofill Summary -->
+                <div class="card bg-light border-0 mb-3 p-3">
+                    <div class="row g-2 small">
+                        <div class="col-6 col-md-3"><span class="text-muted d-block">Request No</span><strong id="cfReqNo">—</strong></div>
+                        <div class="col-6 col-md-3"><span class="text-muted d-block">Type</span><strong id="cfType">—</strong></div>
+                        <div class="col-12 col-md-6"><span class="text-muted d-block">Purpose</span><strong id="cfPurpose">—</strong></div>
+                        <div class="col-6 col-md-3"><span class="text-muted d-block">Requested (₹)</span><strong id="cfRequested">—</strong></div>
+                        <div class="col-6 col-md-3"><span class="text-muted d-block">Approved (₹)</span><strong id="cfApproved">—</strong></div>
+                        <div class="col-6 col-md-3"><span class="text-muted d-block">Total Paid (₹)</span><strong id="cfPaid">—</strong></div>
+                    </div>
+                </div>
                 <form id="completionForm" enctype="multipart/form-data">
                     <input type="hidden" name="request_id" id="completionRequestId">
+                    <!-- Completion Remark -->
                     <div class="mb-3">
-                        <label class="form-label">Completion Remark <span class="text-danger">*</span></label>
-                        <textarea name="completion_remark" id="completionRemark" class="form-control" rows="3" required placeholder="Describe what was completed…"></textarea>
+                        <label class="form-label fw-bold">Completion Remark <span class="text-danger">*</span></label>
+                        <textarea name="completion_remark" id="completionRemark" class="form-control" rows="3" required
+                            placeholder="e.g. Material: 5 litre thinner purchased and issued to paint shop.&#10;Labour: 4 labourers engaged for loading finished material.&#10;Transport: Material delivered to customer site."></textarea>
                     </div>
-                    <!-- Transport-specific fields -->
-                    <div id="transportFields" style="display:none">
-                        <div class="mb-3">
-                            <label class="form-label">Vehicle Number <small class="text-muted">(Optional)</small></label>
-                            <input type="text" name="vehicle_number" class="form-control" placeholder="e.g. MH12AB1234">
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Transporter Name <small class="text-muted">(Optional)</small></label>
-                            <input type="text" name="transporter_name" class="form-control" placeholder="Transporter / driver name">
-                        </div>
+                    <!-- Document Upload — at least one required -->
+                    <div class="alert alert-warning py-2 mb-3 small">
+                        <strong>📎 Document Required:</strong> Upload at least one — Vendor Bill <em>or</em> Company Voucher.
                     </div>
-                    <!-- File upload — shown for Material and Service -->
-                    <div id="completionFileField" style="display:none" class="mb-3">
-                        <label class="form-label" id="completionFileLabel">Upload Bill / Invoice <small class="text-muted">(Optional)</small></label>
-                        <input type="file" name="completion_file" class="form-control" accept="image/*,application/pdf">
+                    <div class="row g-3 mb-2">
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Vendor Bill <small class="text-muted">(Optional)</small></label>
+                            <input type="file" name="vendor_bill" id="vendorBillInput" class="form-control" accept="image/*,application/pdf">
+                            <div class="form-text">Invoice / receipt from the vendor</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Company Voucher <small class="text-muted">(Optional)</small></label>
+                            <input type="file" name="company_voucher" id="companyVoucherInput" class="form-control" accept="image/*,application/pdf">
+                            <div class="form-text">Internal company payment voucher</div>
+                        </div>
                     </div>
                 </form>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-success" id="completionSubmitBtn" onclick="submitCompletion()">Submit Completion</button>
+                <button type="button" class="btn btn-success" id="completionSubmitBtn" onclick="submitCompletion()">✅ Submit Completion</button>
             </div>
         </div>
     </div>

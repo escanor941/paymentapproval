@@ -320,11 +320,19 @@ function openVerify(id) {
   document.getElementById('verifyRemarks').value = '';
   const info = document.getElementById('verifyCompletionInfo');
   if (info) {
+    const billLink = req.vendor_bill_path
+      ? `<a href="/requests/${id}/vendor-bill" target="_blank" class="btn btn-sm btn-outline-primary me-2">📄 View Vendor Bill</a>`
+      : '<span class="text-muted me-2">No vendor bill</span>';
+    const voucherLink = req.company_voucher_path
+      ? `<a href="/requests/${id}/company-voucher" target="_blank" class="btn btn-sm btn-outline-secondary">🧾 View Company Voucher</a>`
+      : '<span class="text-muted">No company voucher</span>';
     const lines = [
-      req.completion_remark ? `<div><strong>Completion Remark:</strong> ${escHtml(req.completion_remark)}</div>` : '',
-      req.completion_vehicle_number ? `<div><strong>Vehicle No:</strong> ${escHtml(req.completion_vehicle_number)}</div>` : '',
-      req.completion_transporter_name ? `<div><strong>Transporter:</strong> ${escHtml(req.completion_transporter_name)}</div>` : '',
-      req.completion_submitted_at ? `<div><strong>Submitted At:</strong> ${escHtml(req.completion_submitted_at)}</div>` : '',
+      `<div class="mb-2"><strong>Request No:</strong> #${id} &nbsp;|&nbsp; <strong>Type:</strong> ${escHtml(req.request_type || req.item_category || '—')}</div>`,
+      `<div class="mb-1"><strong>Purpose:</strong> ${escHtml(req.purpose || req.item_name || '—')}</div>`,
+      req.completion_remark ? `<div class="mb-2 p-2 bg-light rounded"><strong>Completion Remark:</strong><br>${escHtml(req.completion_remark)}</div>` : '',
+      req.completion_submitted_by_name ? `<div class="mb-1"><strong>Submitted By:</strong> ${escHtml(req.completion_submitted_by_name)}</div>` : '',
+      req.completion_submitted_at ? `<div class="mb-2"><strong>Submitted At:</strong> ${escHtml(req.completion_submitted_at)}</div>` : '',
+      `<div class="mb-1">${billLink}${voucherLink}</div>`,
     ].filter(Boolean);
     info.innerHTML = lines.length ? lines.join('') : '<span class="text-muted">No completion details</span>';
   }
@@ -333,8 +341,11 @@ function openVerify(id) {
 window.openVerify = openVerify;
 
 async function reopenRequest(id) {
-  if (!confirm('Reopen this request for factory resubmission?')) return;
-  const res = await fetch(`/requests/${id}/reopen`, { method: 'POST' });
+  const reason = prompt('Reason for reopening (will be shown to factory user):');
+  if (reason === null) return; // cancelled
+  const fd = new FormData();
+  if (reason.trim()) fd.append('reason', reason.trim());
+  const res = await fetch(`/requests/${id}/reopen`, { method: 'POST', body: fd });
   const data = await res.json();
   alert(data.message || data.detail || 'Reopened');
   loadRequests();
@@ -404,10 +415,11 @@ async function viewDetails(id) {
     ['Completion Status', req.completion_status || '—'],
     ['Approval Remark', req.approval_remark || '—'],
     ['Completion Remark', req.completion_remark || '—'],
-    ['Completion Bill', req.completion_bill_path ? '<a href="/requests/' + req.id + '/bill" target="_blank">View Bill</a>' : '—'],
-    ['Vehicle No', req.completion_vehicle_number || '—'],
-    ['Transporter', req.completion_transporter_name || '—'],
+    ['Submitted By', req.completion_submitted_by_name || '—'],
+    ['Vendor Bill', req.vendor_bill_path ? `<a href="/requests/${req.id}/vendor-bill" target="_blank">📄 View Vendor Bill</a>` : '—'],
+    ['Company Voucher', req.company_voucher_path ? `<a href="/requests/${req.id}/company-voucher" target="_blank">🧾 View Voucher</a>` : '—'],
     ['Completion Submitted', req.completion_submitted_at || '—'],
+    ['Reopen Reason', req.reopen_reason || '—'],
     ['Verified Remark', req.verified_remark || '—'],
     ['Verified At', req.verified_at || '—'],
     ['Created At', req.created_at || '—'],

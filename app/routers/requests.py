@@ -74,14 +74,16 @@ def _as_dict(req: PurchaseRequest) -> dict:
         "completion_status": req.completion_status,
         "completion_remark": req.completion_remark,
         "completion_bill_path": req.completion_bill_path,
-        "completion_vehicle_number": req.completion_vehicle_number,
-        "completion_transporter_name": req.completion_transporter_name,
+        "vendor_bill_path": req.vendor_bill_path,
+        "company_voucher_path": req.company_voucher_path,
+        "completion_submitted_by_name": req.completion_submitted_by_name,
         "completion_submitted_at": str(req.completion_submitted_at) if req.completion_submitted_at else None,
         # Admin verification
         "verified_by": req.verified_by,
         "verified_at": str(req.verified_at) if req.verified_at else None,
         "verified_remark": req.verified_remark,
         "closed_by": req.closed_by,
+        "reopen_reason": req.reopen_reason,
         #
         "approval_status": req.approval_status,
         "approved_amount": req.approved_amount,
@@ -491,17 +493,36 @@ def create_factory_request(
     return {"message": message, "id": req.id}
 
 
+@router.get("/requests/{request_id}/detail")
+def get_request_detail(
+    request_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return full request details for factory completion autofill or admin review."""
+    req = db.get(PurchaseRequest, request_id)
+    if not req or req.is_deleted:
+        raise HTTPException(404, "Request not found")
+    # Payment summary
+    total_paid = sum(p.paid_amount for p in req.payments)
+    return {
+        **_as_dict(req),
+        "total_paid": round(total_paid, 2),
+        "balance": round((req.final_amount or 0) - total_paid, 2),
+    }
+
+
 @router.post("/requests/{request_id}/complete")
 def submit_completion(
     request_id: int,
     completion_remark: str = Form(...),
-    vehicle_number: str | None = Form(None),
-    transporter_name: str | None = Form(None),
-    completion_file: UploadFile | None = File(None),
+    vendor_bill: UploadFile | None = File(None),
+    company_voucher: UploadFile | None = File(None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Factory user submits completion details after admin has fully paid."""
+    """Factory user submits completion details after admin has fully paid.
+    At least one of vendor_bill or company_voucher must be uploaded."""
     if user.role != "factory":
         raise HTTPException(403, "Only factory users can submit completion")
 
@@ -517,29 +538,37 @@ def submit_completion(
     if not remark:
         raise HTTPException(400, "Completion remark is required")
 
-    uploaded_path = _save_file(completion_file)
+    # At least one document must be provided
+    has_vendor_bill = vendor_bill and vendor_bill.filename
+    has_voucher = company_voucher and company_voucher.filename
+    if not has_vendor_bill and not has_voucher:
+        raise HTTPException(400, "Please upload Vendor Bill or Company Voucher before submitting completion")
+
+    vendor_bill_path = _save_file(vendor_bill) if has_vendor_bill else None
+    company_voucher_path = _save_file(company_voucher) if has_voucher else None
 
     old = _as_dict(req)
     req.completion_status = "Completion Submitted"
     req.completion_remark = remark
     req.completion_submitted_at = datetime.utcnow()
-    if uploaded_path:
-        req.completion_bill_path = uploaded_path
-    if vehicle_number:
-        req.completion_vehicle_number = (vehicle_number or "").strip() or None
-    if transporter_name:
-        req.completion_transporter_name = (transporter_name or "").strip() or None
+    req.completion_submitted_by_name = user.name
+    if vendor_bill_path:
+        req.vendor_bill_path = vendor_bill_path
+    if company_voucher_path:
+        req.company_voucher_path = company_voucher_path
 
     log_change(db, entity="purchase_request", entity_id=req.id, action="COMPLETION_SUBMIT", old_value=old, new_value=_as_dict(req), changed_by=user.id)
     try:
         db.commit()
     except Exception as exc:
         db.rollback()
-        if uploaded_path:
-            _delete_file(uploaded_path)
+        if vendor_bill_path:
+            _delete_file(vendor_bill_path)
+        if company_voucher_path:
+            _delete_file(company_voucher_path)
         raise HTTPException(500, f"Failed to submit completion: {exc}") from exc
 
-    return {"message": "Completion submitted successfully"}
+    return {"message": "Completion submitted successfully", "id": req.id}
 
 
 @router.post("/requests/simple-bill")
@@ -980,6 +1009,51 @@ def view_bill(
     )
 
 
+def _serve_request_file(request_id: int, path_attr: str, label: str, request: Request, db: Session):
+    """Generic file-server for completion documents (vendor bill, company voucher)."""
+    from fastapi.responses import RedirectResponse, FileResponse
+    import os
+    from pathlib import Path
+
+    user_id = request.session.get("user_id")
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    user = db.get(User, user_id)
+    if not user or not user.is_active:
+        return RedirectResponse(url="/login", status_code=302)
+
+    req = db.get(PurchaseRequest, request_id)
+    if not req or req.is_deleted:
+        raise HTTPException(404, "Request not found")
+    if user.role != "admin" and req.requested_by_user_id != user.id:
+        raise HTTPException(403, "Not authorized")
+
+    path = (getattr(req, path_attr, None) or "").strip()
+    if not path:
+        raise HTTPException(404, f"No {label} attached to this request")
+
+    if path.startswith("http://") or path.startswith("https://"):
+        return RedirectResponse(url=path, status_code=302)
+
+    local_path = Path(path.lstrip("/"))
+    if not local_path.exists():
+        upload_dir = Path(os.getenv("UPLOAD_DIR", "uploads"))
+        local_path = upload_dir / local_path.name
+    if local_path.exists():
+        return FileResponse(str(local_path))
+    raise HTTPException(404, f"{label} file not found on disk")
+
+
+@router.get("/requests/{request_id}/vendor-bill")
+def view_vendor_bill(request_id: int, request: Request, db: Session = Depends(get_db)):
+    return _serve_request_file(request_id, "vendor_bill_path", "Vendor Bill", request, db)
+
+
+@router.get("/requests/{request_id}/company-voucher")
+def view_company_voucher(request_id: int, request: Request, db: Session = Depends(get_db)):
+    return _serve_request_file(request_id, "company_voucher_path", "Company Voucher", request, db)
+
+
 @router.delete("/requests/{request_id}")
 
 def delete_request(
@@ -1384,6 +1458,7 @@ def verify_request(
 @router.post("/requests/{request_id}/reopen")
 def reopen_completion(
     request_id: int,
+    reason: str | None = Form(None),
     db: Session = Depends(get_db),
     user: User = Depends(admin_required),
 ):
@@ -1395,6 +1470,13 @@ def reopen_completion(
 
     old = _as_dict(req)
     req.completion_status = "Awaiting Completion"
+    req.reopen_reason = (reason or "").strip() or None
+    # Clear previous completion data so factory must resubmit fresh
+    req.completion_remark = None
+    req.vendor_bill_path = None
+    req.company_voucher_path = None
+    req.completion_submitted_at = None
+    req.completion_submitted_by_name = None
     req.verified_by = None
     req.verified_at = None
     req.verified_remark = None

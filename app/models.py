@@ -108,8 +108,9 @@ class PurchaseRequest(Base):
     completion_status: Mapped[str] = mapped_column(String(30), default="Pending")
     completion_remark: Mapped[str | None] = mapped_column(Text, nullable=True)
     completion_bill_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    completion_vehicle_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    completion_transporter_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    vendor_bill_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    company_voucher_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    completion_submitted_by_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     completion_submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Admin verification workflow
@@ -117,6 +118,7 @@ class PurchaseRequest(Base):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     verified_remark: Mapped[str | None] = mapped_column(Text, nullable=True)
     closed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reopen_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     approval_status: Mapped[str] = mapped_column(String(20), default="Pending")
     approved_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
