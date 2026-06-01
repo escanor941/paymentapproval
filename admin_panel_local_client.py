@@ -1680,7 +1680,7 @@ class AdminLocalClient:
 
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Verify & Close — Request #{req_id}")
-        dialog.geometry("480x420")
+        dialog.geometry("500x460")
         dialog.resizable(False, False)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -1697,8 +1697,89 @@ class AdminLocalClient:
         _info_row("Completion Remark", req_data.get("completion_remark") or "—")
         _info_row("Submitted By",      req_data.get("completion_submitted_by_name") or "—")
         _info_row("Submitted At",      req_data.get("completion_submitted_at") or "—")
-        _info_row("Vendor Bill",       "✓ Uploaded" if req_data.get("vendor_bill_path") else "✗ None")
-        _info_row("Company Voucher",   "✓ Uploaded" if req_data.get("company_voucher_path") else "✗ None")
+
+        # Document buttons row
+        doc_frame = ttk.Frame(info_frame)
+        doc_frame.pack(fill="x", pady=(6, 0))
+        ttk.Label(doc_frame, text="Documents:", width=18, anchor="w",
+                  font=("Segoe UI", 9, "bold")).pack(side="left")
+        btn_area = ttk.Frame(doc_frame)
+        btn_area.pack(side="left")
+
+        def _open_doc(doc_type: str, label: str):
+            """Fetch doc from server, save to temp file, open with OS viewer."""
+            import tempfile, os, threading
+            base = DEFAULT_BASE_URL.rstrip("/")
+            endpoint = f"{base}/requests/{req_id}/{doc_type}"
+            def _fetch():
+                try:
+                    r = self.session.get(endpoint, allow_redirects=True, timeout=30)
+                    if r.status_code == 200:
+                        ct = r.headers.get("Content-Type", "")
+                        ext = ".pdf" if "pdf" in ct else (".png" if "png" in ct else ".jpg")
+                        cd = r.headers.get("Content-Disposition", "")
+                        import re as _re
+                        m = _re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', cd, _re.IGNORECASE)
+                        if m:
+                            ext = Path(m.group(1).strip()).suffix or ext
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext, prefix=f"req{req_id}_{doc_type}_")
+                        tmp.write(r.content); tmp.close()
+                        os.startfile(tmp.name)
+                    else:
+                        dialog.after(0, lambda: messagebox.showerror("Document", f"Could not fetch {label} (HTTP {r.status_code})"))
+                except Exception as exc:
+                    dialog.after(0, lambda: messagebox.showerror("Document", f"Error: {exc}"))
+            threading.Thread(target=_fetch, daemon=True).start()
+
+        def _download_doc(doc_type: str, label: str):
+            import threading
+            base = DEFAULT_BASE_URL.rstrip("/")
+            endpoint = f"{base}/requests/{req_id}/{doc_type}"
+            def _fetch():
+                try:
+                    r = self.session.get(endpoint, allow_redirects=True, timeout=30)
+                    if r.status_code == 200:
+                        ct = r.headers.get("Content-Type", "")
+                        ext = ".pdf" if "pdf" in ct else (".png" if "png" in ct else ".jpg")
+                        cd = r.headers.get("Content-Disposition", "")
+                        import re as _re
+                        m = _re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', cd, _re.IGNORECASE)
+                        if m:
+                            ext = Path(m.group(1).strip()).suffix or ext
+                        default_name = f"request_{req_id}_{doc_type}{ext}"
+                        out_file = dialog.after(0, lambda: None)  # schedule on main thread
+                        def _save():
+                            of = filedialog.asksaveasfilename(
+                                title=f"Save {label}", defaultextension=ext,
+                                initialfile=default_name, filetypes=[("All Files", "*.*")])
+                            if of:
+                                with open(of, "wb") as f: f.write(r.content)
+                                messagebox.showinfo("Download", f"Saved:\n{of}")
+                        dialog.after(0, _save)
+                    else:
+                        dialog.after(0, lambda: messagebox.showerror("Download", f"Could not fetch {label} (HTTP {r.status_code})"))
+                except Exception as exc:
+                    dialog.after(0, lambda: messagebox.showerror("Download", f"Error: {exc}"))
+            threading.Thread(target=_fetch, daemon=True).start()
+
+        has_vb = bool(req_data.get("vendor_bill_path"))
+        has_cv = bool(req_data.get("company_voucher_path"))
+
+        if has_vb:
+            ttk.Button(btn_area, text="📄 View Vendor Bill",
+                       command=lambda: _open_doc("vendor-bill", "Vendor Bill")).pack(side="left", padx=(0, 4))
+            ttk.Button(btn_area, text="⬇ Download",
+                       command=lambda: _download_doc("vendor-bill", "Vendor Bill")).pack(side="left", padx=(0, 8))
+        else:
+            ttk.Label(btn_area, text="No vendor bill", foreground="#888").pack(side="left", padx=(0, 8))
+
+        if has_cv:
+            ttk.Button(btn_area, text="🧾 View Voucher",
+                       command=lambda: _open_doc("company-voucher", "Company Voucher")).pack(side="left", padx=(0, 4))
+            ttk.Button(btn_area, text="⬇ Download",
+                       command=lambda: _download_doc("company-voucher", "Company Voucher")).pack(side="left")
+        else:
+            ttk.Label(btn_area, text="No company voucher", foreground="#888").pack(side="left")
 
         ttk.Label(dialog, text="Closing Remarks (optional)", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(12, 4))
         remarks_box = tk.Text(dialog, height=5)

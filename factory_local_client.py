@@ -69,7 +69,8 @@ def init_db() -> None:
         for col in ["prev_status", "bill_image_path", "notes", "reason", "urgent_flag",
                     "requested_by", "vendor_id", "factory_id", "vendor_mobile",
                     "qty", "unit", "rate", "gst_percent", "amount", "approval_remark",
-                    "request_type", "purpose", "completion_status"]:
+                    "request_type", "purpose", "completion_status",
+                    "vendor_bill_path", "company_voucher_path"]:
             if col not in cols:
                 conn.execute(f"ALTER TABLE my_requests ADD COLUMN {col} TEXT")
         conn.execute(
@@ -466,6 +467,31 @@ class FactoryLocalClient:
         self.tree.pack(side="left", fill="both", expand=True)
         vs.pack(side="right", fill="y")
 
+        def _on_tree_click(event):
+            region = self.tree.identify_region(event.x, event.y)
+            if region != "cell":
+                return
+            col = self.tree.identify_column(event.x)
+            col_index = int(col.replace("#", "")) - 1
+            if cols[col_index] != "actions":
+                return
+            item = self.tree.identify_row(event.y)
+            if not item:
+                return
+            cell_val = self.tree.set(item, "actions")
+            self.tree.selection_set(item)
+            self.tree.focus(item)
+            if "[Submit Completion]" in cell_val:
+                self.completion_selected()
+            elif "[View Docs]" in cell_val:
+                self.view_completion_docs(int(item))
+            elif "[Bill]" in cell_val:
+                self.view_bill_selected()
+            elif "[Delete]" in cell_val:
+                self.delete_selected()
+
+        self.tree.bind("<ButtonRelease-1>", _on_tree_click)
+
         act_row = ttk.Frame(right)
         act_row.pack(fill="x", pady=(4, 0))
 
@@ -658,8 +684,8 @@ class FactoryLocalClient:
                         qty,unit,rate,gst_percent,amount,final_amount,reason,urgent_flag,
                         requested_by,notes,vendor_id,factory_id,vendor_mobile,approval_status,
                         payment_status,approval_remark,bill_image_path,updated_at,synced_at,prev_status,
-                        request_type,purpose,completion_status)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        request_type,purpose,completion_status,vendor_bill_path,company_voucher_path)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(id) DO UPDATE SET
                         request_date=excluded.request_date, item_category=excluded.item_category,
                         vendor=excluded.vendor, item_name=excluded.item_name, qty=excluded.qty,
@@ -674,6 +700,8 @@ class FactoryLocalClient:
                         synced_at=excluded.synced_at,
                         request_type=excluded.request_type, purpose=excluded.purpose,
                         completion_status=excluded.completion_status,
+                        vendor_bill_path=excluded.vendor_bill_path,
+                        company_voucher_path=excluded.company_voucher_path,
                         prev_status=CASE WHEN my_requests.approval_status != excluded.approval_status
                                     THEN my_requests.approval_status ELSE my_requests.prev_status END
                     """,
@@ -686,7 +714,8 @@ class FactoryLocalClient:
                      it.get("bill_image_path"), it.get("updated_at"), now, prev_status,
                      it.get("request_type") or it.get("item_category"),
                      it.get("purpose") or it.get("item_name"),
-                     it.get("completion_status") or "Pending"))
+                     it.get("completion_status") or "Pending",
+                     it.get("vendor_bill_path"), it.get("company_voucher_path")))
             conn.commit()
 
     def _load_my_requests_from_cache(self) -> None:
@@ -701,7 +730,8 @@ class FactoryLocalClient:
         with sqlite3.connect(db_path()) as conn:
             rows = conn.execute("""
                 SELECT id, request_date, request_type, purpose, final_amount,
-                       approval_status, completion_status, bill_image_path, prev_status, approval_remark
+                       approval_status, completion_status, bill_image_path, prev_status, approval_remark,
+                       vendor_bill_path, company_voucher_path
                 FROM my_requests ORDER BY id DESC
             """).fetchall()
 
@@ -713,6 +743,8 @@ class FactoryLocalClient:
                 approval_status = "Partial Approved"
             prev_status = r[8]
             self.bill_paths[req_id] = r[7] or ""
+            vendor_bill_path     = r[10] or ""
+            company_voucher_path = r[11] or ""
 
             if filt_status and approval_status != filt_status:
                 continue
@@ -728,7 +760,9 @@ class FactoryLocalClient:
                 actions.append("[Delete]")
             if completion_status == "Awaiting Completion":
                 actions.append("[Submit Completion]")
-            if self.bill_paths[req_id]:
+            if vendor_bill_path or company_voucher_path:
+                actions.append("[View Docs]")
+            elif self.bill_paths[req_id]:
                 actions.append("[Bill]")
 
             req_type = r[2] or ""
@@ -1037,6 +1071,117 @@ class FactoryLocalClient:
         base = DEFAULT_BASE_URL.rstrip("/") + "/"
         bill_url = path if path.startswith("http") else urljoin(base, path.lstrip("/"))
         webbrowser.open_new_tab(bill_url)
+
+    def view_completion_docs(self, req_id: int) -> None:
+        """Open a dialog with view/download buttons for vendor bill and company voucher."""
+        with sqlite3.connect(db_path()) as conn:
+            row = conn.execute(
+                "SELECT vendor_bill_path, company_voucher_path FROM my_requests WHERE id=?", (req_id,)
+            ).fetchone()
+        if not row or (not row[0] and not row[1]):
+            messagebox.showinfo("Documents", "No completion documents uploaded for this request.")
+            return
+        vendor_bill_path, company_voucher_path = row
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Completion Documents — Request #{req_id}")
+        dialog.geometry("420x200")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text=f"Completion Documents for Request #{req_id}",
+                  font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=16, pady=(14, 8))
+
+        def _open_doc(doc_type: str, label: str):
+            import tempfile, os, threading
+            base = DEFAULT_BASE_URL.rstrip("/")
+            endpoint = f"{base}/requests/{req_id}/{doc_type}"
+            def _fetch():
+                try:
+                    r = self.session.get(endpoint, allow_redirects=True, timeout=30)
+                    if r.status_code == 200:
+                        ct = r.headers.get("Content-Type", "")
+                        ext = ".pdf" if "pdf" in ct else (".png" if "png" in ct else ".jpg")
+                        import re as _re
+                        cd = r.headers.get("Content-Disposition", "")
+                        m = _re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', cd, _re.IGNORECASE)
+                        if m:
+                            ext = Path(m.group(1).strip()).suffix or ext
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext,
+                                                         prefix=f"req{req_id}_{doc_type}_")
+                        tmp.write(r.content); tmp.close()
+                        os.startfile(tmp.name)
+                    elif r.status_code == 302 and "/login" in r.headers.get("Location", ""):
+                        dialog.after(0, lambda: messagebox.showerror("Documents", "Session expired. Please login again."))
+                    else:
+                        dialog.after(0, lambda: messagebox.showerror("Documents",
+                            f"Could not fetch {label} (HTTP {r.status_code})"))
+                except Exception as exc:
+                    dialog.after(0, lambda: messagebox.showerror("Documents", f"Error: {exc}"))
+            threading.Thread(target=_fetch, daemon=True).start()
+
+        def _download_doc(doc_type: str, label: str):
+            import threading
+            base = DEFAULT_BASE_URL.rstrip("/")
+            endpoint = f"{base}/requests/{req_id}/{doc_type}"
+            def _fetch():
+                try:
+                    r = self.session.get(endpoint, allow_redirects=True, timeout=30)
+                    if r.status_code == 200:
+                        ct = r.headers.get("Content-Type", "")
+                        ext = ".pdf" if "pdf" in ct else (".png" if "png" in ct else ".jpg")
+                        import re as _re
+                        cd = r.headers.get("Content-Disposition", "")
+                        m = _re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', cd, _re.IGNORECASE)
+                        if m:
+                            ext = Path(m.group(1).strip()).suffix or ext
+                        def _save():
+                            of = filedialog.asksaveasfilename(
+                                title=f"Save {label}", defaultextension=ext,
+                                initialfile=f"request_{req_id}_{doc_type}{ext}",
+                                filetypes=[("All Files", "*.*")])
+                            if of:
+                                with open(of, "wb") as f: f.write(r.content)
+                                messagebox.showinfo("Download", f"Saved:\n{of}")
+                        dialog.after(0, _save)
+                    else:
+                        dialog.after(0, lambda: messagebox.showerror("Download",
+                            f"Could not fetch {label} (HTTP {r.status_code})"))
+                except Exception as exc:
+                    dialog.after(0, lambda: messagebox.showerror("Download", f"Error: {exc}"))
+            threading.Thread(target=_fetch, daemon=True).start()
+
+        if vendor_bill_path:
+            row1 = ttk.Frame(dialog)
+            row1.pack(fill="x", padx=16, pady=4)
+            ttk.Label(row1, text="📄 Vendor Bill:", width=18, anchor="w",
+                      font=("Segoe UI", 9, "bold")).pack(side="left")
+            ttk.Button(row1, text="View", command=lambda: _open_doc("vendor-bill", "Vendor Bill")).pack(side="left", padx=(0, 4))
+            ttk.Button(row1, text="Download", command=lambda: _download_doc("vendor-bill", "Vendor Bill")).pack(side="left")
+        else:
+            row1 = ttk.Frame(dialog)
+            row1.pack(fill="x", padx=16, pady=4)
+            ttk.Label(row1, text="📄 Vendor Bill:", width=18, anchor="w",
+                      font=("Segoe UI", 9, "bold")).pack(side="left")
+            ttk.Label(row1, text="Not uploaded", foreground="#888").pack(side="left")
+
+        if company_voucher_path:
+            row2 = ttk.Frame(dialog)
+            row2.pack(fill="x", padx=16, pady=4)
+            ttk.Label(row2, text="🧾 Co. Voucher:", width=18, anchor="w",
+                      font=("Segoe UI", 9, "bold")).pack(side="left")
+            ttk.Button(row2, text="View", command=lambda: _open_doc("company-voucher", "Company Voucher")).pack(side="left", padx=(0, 4))
+            ttk.Button(row2, text="Download", command=lambda: _download_doc("company-voucher", "Company Voucher")).pack(side="left")
+        else:
+            row2 = ttk.Frame(dialog)
+            row2.pack(fill="x", padx=16, pady=4)
+            ttk.Label(row2, text="🧾 Co. Voucher:", width=18, anchor="w",
+                      font=("Segoe UI", 9, "bold")).pack(side="left")
+            ttk.Label(row2, text="Not uploaded", foreground="#888").pack(side="left")
+
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(12, 0))
+        dialog.wait_window()
 
     def submit_bill_upload(self) -> None:
         if not self.logged_in:
