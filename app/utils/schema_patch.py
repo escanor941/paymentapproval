@@ -8,6 +8,20 @@ REQUIRED_PURCHASE_REQUEST_COLUMNS = {
     "geo_captured_at": "ALTER TABLE purchase_requests ADD COLUMN geo_captured_at TIMESTAMP",
     "is_in_factory": "ALTER TABLE purchase_requests ADD COLUMN is_in_factory BOOLEAN",
     "distance_from_factory_m": "ALTER TABLE purchase_requests ADD COLUMN distance_from_factory_m FLOAT",
+    # Factory workflow v2
+    "request_type": "ALTER TABLE purchase_requests ADD COLUMN request_type VARCHAR(50)",
+    "purpose": "ALTER TABLE purchase_requests ADD COLUMN purpose TEXT",
+    "completion_status": "ALTER TABLE purchase_requests ADD COLUMN completion_status VARCHAR(30) DEFAULT 'Pending'",
+    "completion_remark": "ALTER TABLE purchase_requests ADD COLUMN completion_remark TEXT",
+    "completion_bill_path": "ALTER TABLE purchase_requests ADD COLUMN completion_bill_path VARCHAR(255)",
+    "completion_vehicle_number": "ALTER TABLE purchase_requests ADD COLUMN completion_vehicle_number VARCHAR(50)",
+    "completion_transporter_name": "ALTER TABLE purchase_requests ADD COLUMN completion_transporter_name VARCHAR(120)",
+    "completion_submitted_at": "ALTER TABLE purchase_requests ADD COLUMN completion_submitted_at TIMESTAMP",
+    # Admin verification workflow
+    "verified_by": "ALTER TABLE purchase_requests ADD COLUMN verified_by INTEGER",
+    "verified_at": "ALTER TABLE purchase_requests ADD COLUMN verified_at TIMESTAMP",
+    "verified_remark": "ALTER TABLE purchase_requests ADD COLUMN verified_remark TEXT",
+    "closed_by": "ALTER TABLE purchase_requests ADD COLUMN closed_by INTEGER",
 }
 
 

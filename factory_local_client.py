@@ -68,7 +68,8 @@ def init_db() -> None:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(my_requests)")}
         for col in ["prev_status", "bill_image_path", "notes", "reason", "urgent_flag",
                     "requested_by", "vendor_id", "factory_id", "vendor_mobile",
-                    "qty", "unit", "rate", "gst_percent", "amount", "approval_remark"]:
+                    "qty", "unit", "rate", "gst_percent", "amount", "approval_remark",
+                    "request_type", "purpose", "completion_status"]:
             if col not in cols:
                 conn.execute(f"ALTER TABLE my_requests ADD COLUMN {col} TEXT")
         conn.execute(
@@ -135,33 +136,22 @@ class FactoryLocalClient:
         self.f_date = tk.StringVar(value=str(date.today()))
         self.f_factory_id = tk.IntVar(value=0)
         self.f_factory_name = tk.StringVar(value="")
-        self.f_vendor_id = tk.IntVar(value=0)
-        self.f_vendor_name = tk.StringVar(value="")
-        self.f_vendor_mobile = tk.StringVar(value="")
-        self.f_category = tk.StringVar(value="")
-        self.f_item = tk.StringVar(value="")
-        self.f_qty = tk.StringVar(value="")
-        self.f_unit = tk.StringVar(value="")
-        self.f_rate = tk.StringVar(value="")
-        self.f_gst = tk.StringVar(value="0")
-        self.f_amount = tk.StringVar(value="0.00")
-        self.f_final = tk.StringVar(value="0.00")
-        self.f_urgent = tk.StringVar(value="false")
-        self.f_requested_by = tk.StringVar(value="")
-        self.req_bill_path = tk.StringVar(value="")
+        self.f_request_type = tk.StringVar(value="Material")
+        self.f_purpose = tk.StringVar(value="")
+        self.f_req_amount = tk.StringVar(value="")
+        self.f_remarks = tk.StringVar(value="")
 
         self.b_vendor_name = tk.StringVar(value="")
         self.b_factory_id = tk.IntVar(value=0)
         self.b_factory_name = tk.StringVar(value="")
         self.b_file_path = tk.StringVar(value="")
 
-        self.filt_date = tk.StringVar(value="")
-        self.filt_vendor = tk.StringVar(value="")
         self.filt_status = tk.StringVar(value="")
+        self.filt_completion = tk.StringVar(value="")
 
         self.factories: list[dict] = []
-        self.vendors: list[dict] = []
         self.bill_paths: dict[int, str] = {}
+        self.edit_request_id: int | None = None
 
         self._build_ui()
         self._refresh_combos()
@@ -376,93 +366,52 @@ class FactoryLocalClient:
 
     def _build_request_tab(self) -> None:
         outer = self.request_frame
-        outer.columnconfigure(0, weight=0, minsize=490)
+        outer.columnconfigure(0, weight=0, minsize=420)
         outer.columnconfigure(1, weight=1)
         outer.rowconfigure(0, weight=1)
 
         left = ttk.LabelFrame(outer, text="Create Purchase Request", padding=10)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=2)
         left.columnconfigure(1, weight=1)
-        left.columnconfigure(3, weight=1)
-        p = {"padx": 4, "pady": 3, "sticky": "w"}
-        fw = 22
+        p = {"padx": 4, "pady": 5, "sticky": "ew"}
+        fw = 28
+
+        REQUEST_TYPES = ["Material", "Labour", "Transport", "Service", "Utility", "Emergency"]
 
         r = 0
-        ttk.Label(left, text="Request Date *").grid(row=r, column=0, **p)
-        ttk.Entry(left, textvariable=self.f_date, width=fw).grid(row=r, column=1, **p)
-        ttk.Label(left, text="Factory *").grid(row=r, column=2, **p)
+        ttk.Label(left, text="Factory *").grid(row=r, column=0, padx=4, pady=5, sticky="w")
         self.factory_combo = ttk.Combobox(left, textvariable=self.f_factory_name, state="readonly", width=fw)
-        self.factory_combo.grid(row=r, column=3, **p)
+        self.factory_combo.grid(row=r, column=1, **p)
         self.factory_combo.bind("<<ComboboxSelected>>", self._on_factory_select)
 
         r += 1
-        ttk.Label(left, text="Vendor *").grid(row=r, column=0, **p)
-        self.vendor_combo = ttk.Combobox(left, textvariable=self.f_vendor_name, state="readonly", width=fw)
-        self.vendor_combo.grid(row=r, column=1, **p)
-        self.vendor_combo.bind("<<ComboboxSelected>>", self._on_vendor_select)
-        ttk.Label(left, text="Vendor Name").grid(row=r, column=2, **p)
-        ttk.Entry(left, textvariable=self.f_vendor_mobile, width=fw).grid(row=r, column=3, **p)
+        ttk.Label(left, text="Request Type *").grid(row=r, column=0, padx=4, pady=5, sticky="w")
+        self.type_combo = ttk.Combobox(left, textvariable=self.f_request_type,
+                                       values=REQUEST_TYPES, state="readonly", width=fw)
+        self.type_combo.grid(row=r, column=1, **p)
 
         r += 1
-        ttk.Label(left, text="Item Category *").grid(row=r, column=0, **p)
-        self.category_combo = ttk.Combobox(left, textvariable=self.f_category, state="readonly", width=fw)
-        self.category_combo.grid(row=r, column=1, **p)
-        ttk.Label(left, text="Item Name *").grid(row=r, column=2, **p)
-        ttk.Entry(left, textvariable=self.f_item, width=fw).grid(row=r, column=3, **p)
+        ttk.Label(left, text="Purpose *").grid(row=r, column=0, padx=4, pady=5, sticky="nw")
+        self.purpose_text = tk.Text(left, height=4, width=fw + 4)
+        self.purpose_text.grid(row=r, column=1, padx=4, pady=5, sticky="ew")
 
         r += 1
-        ttk.Label(left, text="Qty *").grid(row=r, column=0, **p)
-        ttk.Entry(left, textvariable=self.f_qty, width=12).grid(row=r, column=1, sticky="w", padx=4, pady=3)
-        self.f_qty.trace_add("write", self._recalculate)
-        ttk.Label(left, text="Unit *").grid(row=r, column=2, **p)
-        self.unit_combo = ttk.Combobox(left, textvariable=self.f_unit, width=fw)
-        self.unit_combo.grid(row=r, column=3, **p)
+        ttk.Label(left, text="Amount ₹ *").grid(row=r, column=0, padx=4, pady=5, sticky="w")
+        ttk.Entry(left, textvariable=self.f_req_amount, width=fw).grid(row=r, column=1, **p)
 
         r += 1
-        ttk.Label(left, text="Rate *").grid(row=r, column=0, **p)
-        ttk.Entry(left, textvariable=self.f_rate, width=12).grid(row=r, column=1, sticky="w", padx=4, pady=3)
-        self.f_rate.trace_add("write", self._recalculate)
-        ttk.Label(left, text="GST %").grid(row=r, column=2, **p)
-        ttk.Entry(left, textvariable=self.f_gst, width=12).grid(row=r, column=3, sticky="w", padx=4, pady=3)
-        self.f_gst.trace_add("write", self._recalculate)
-
-        r += 1
-        ttk.Label(left, text="Amount").grid(row=r, column=0, **p)
-        ttk.Entry(left, textvariable=self.f_amount, state="readonly", width=fw).grid(row=r, column=1, **p)
-        ttk.Label(left, text="Final Amount").grid(row=r, column=2, **p)
-        ttk.Entry(left, textvariable=self.f_final, state="readonly", width=fw).grid(row=r, column=3, **p)
-
-        r += 1
-        ttk.Label(left, text="Reason / Urgency *").grid(row=r, column=0, **p)
-        self.reason_text = tk.Text(left, height=3, width=54)
-        self.reason_text.grid(row=r, column=1, columnspan=3, padx=4, pady=3, sticky="ew")
-
-        r += 1
-        ttk.Label(left, text="Payment Needed Today?").grid(row=r, column=0, **p)
-        ttk.Combobox(left, textvariable=self.f_urgent, values=["false", "true"],
-                     state="readonly", width=12).grid(row=r, column=1, sticky="w", padx=4, pady=3)
-        ttk.Label(left, text="Requested By *").grid(row=r, column=2, **p)
-        ttk.Entry(left, textvariable=self.f_requested_by, width=fw).grid(row=r, column=3, **p)
-
-        r += 1
-        ttk.Label(left, text="Upload Bill / Quotation *").grid(row=r, column=0, **p)
-        ttk.Entry(left, textvariable=self.req_bill_path, state="readonly", width=34).grid(
-            row=r, column=1, columnspan=2, **p)
-        ttk.Button(left, text="Browse", command=self._browse_req_bill).grid(row=r, column=3, **p)
-
-        r += 1
-        ttk.Label(left, text="Notes").grid(row=r, column=0, **p)
-        self.notes_text = tk.Text(left, height=3, width=54)
-        self.notes_text.grid(row=r, column=1, columnspan=3, padx=4, pady=3, sticky="ew")
+        ttk.Label(left, text="Remarks").grid(row=r, column=0, padx=4, pady=5, sticky="w")
+        ttk.Entry(left, textvariable=self.f_remarks, width=fw).grid(row=r, column=1, **p)
 
         r += 1
         self.req_status_var = tk.StringVar(value="")
-        self.req_status_label = ttk.Label(left, textvariable=self.req_status_var, wraplength=460, justify="left")
-        self.req_status_label.grid(row=r, column=0, columnspan=4, padx=4, pady=(6, 0), sticky="w")
+        self.req_status_label = ttk.Label(left, textvariable=self.req_status_var,
+                                          wraplength=360, justify="left")
+        self.req_status_label.grid(row=r, column=0, columnspan=2, padx=4, pady=(6, 0), sticky="w")
 
         r += 1
         btn_row = ttk.Frame(left)
-        btn_row.grid(row=r, column=0, columnspan=4, padx=4, pady=10, sticky="w")
+        btn_row.grid(row=r, column=0, columnspan=2, padx=4, pady=10, sticky="w")
 
         def _fbtn(p, t, c, bg="#1a3a6e"):
             return tk.Button(p, text=t, command=c, bg=bg, fg="white",
@@ -471,10 +420,9 @@ class FactoryLocalClient:
 
         self.submit_btn = _fbtn(btn_row, "\U0001f4e4  Submit Request", self.submit_request, "#1b5e20")
         self.submit_btn.pack(side="left", padx=(0, 6))
-        self.draft_btn = _fbtn(btn_row, "\U0001f4be  Save Draft", self.save_draft, "#e65100")
-        self.draft_btn.pack(side="left", padx=(0, 6))
         _fbtn(btn_row, "\U0001f504  Reset", self.clear_request_form, "#546e7a").pack(side="left")
 
+        # ── My Requests section (right side) ──────────────────────────────
         right = ttk.LabelFrame(outer, text="My Requests", padding=8)
         right.grid(row=0, column=1, sticky="nsew", pady=2)
         right.columnconfigure(0, weight=1)
@@ -482,35 +430,36 @@ class FactoryLocalClient:
 
         fbar = ttk.Frame(right)
         fbar.pack(fill="x", pady=(0, 6))
-        ttk.Label(fbar, text="Date (YYYY-MM-DD):").pack(side="left")
-        ttk.Entry(fbar, textvariable=self.filt_date, width=14).pack(side="left", padx=(2, 8))
-        ttk.Label(fbar, text="Vendor:").pack(side="left")
-        ttk.Entry(fbar, textvariable=self.filt_vendor, width=16).pack(side="left", padx=(2, 8))
-        ttk.Label(fbar, text="Status:").pack(side="left")
+        ttk.Label(fbar, text="Approval:").pack(side="left")
         ttk.Combobox(fbar, textvariable=self.filt_status,
-                     values=["", "Draft", "Pending", "Partial Approved", "Rejected", "Approved"],
-                     state="readonly", width=14).pack(side="left", padx=(2, 6))
+                     values=["", "Pending", "Partial Approved", "Approved", "Rejected"],
+                     state="readonly", width=14).pack(side="left", padx=(2, 8))
+        ttk.Label(fbar, text="Completion:").pack(side="left")
+        ttk.Combobox(fbar, textvariable=self.filt_completion,
+                     values=["", "Pending", "Awaiting Completion", "Completion Submitted", "Closed"],
+                     state="readonly", width=18).pack(side="left", padx=(2, 6))
         ttk.Button(fbar, text="Search", command=self._apply_filters).pack(side="left")
+        ttk.Button(fbar, text="Clear", command=self._clear_filters).pack(side="left", padx=(4, 0))
 
-        cols = ("id", "date", "vendor", "item", "amount", "approval", "payment", "actions")
+        cols = ("id", "date", "type", "purpose", "amount", "approval", "completion", "actions")
         self.tree = ttk.Treeview(right, columns=cols, show="headings", height=18)
-        self.tree.tag_configure("Approved",   background="#d4edda", foreground="#1f8a43")
-        self.tree.tag_configure("Rejected",   background="#f8d7da", foreground="#dc3545")
-        self.tree.tag_configure("Partial Approved", background="#fff3cd", foreground="#856404")
-        self.tree.tag_configure("Hold",       background="#fff3cd", foreground="#856404")  # backward compat
-        self.tree.tag_configure("Draft",      background="#f5f5f5", foreground="#6c757d")
-        self.tree.tag_configure("Pending",    background="#ffffff", foreground="#0b5ed7")
-        self.tree.tag_configure("new_status", background="#ffcccc", foreground="#cc0000")
+        self.tree.tag_configure("Approved",          background="#d4edda", foreground="#1f8a43")
+        self.tree.tag_configure("Rejected",          background="#f8d7da", foreground="#dc3545")
+        self.tree.tag_configure("Partial Approved",  background="#fff3cd", foreground="#856404")
+        self.tree.tag_configure("Pending",           background="#ffffff", foreground="#0b5ed7")
+        self.tree.tag_configure("Draft",             background="#f5f5f5", foreground="#6c757d")
+        self.tree.tag_configure("new_status",        background="#ffcccc", foreground="#cc0000")
+        self.tree.tag_configure("awaiting_comp",     background="#e8f4fd", foreground="#0369a1")
         for c in cols:
             self.tree.heading(c, text=c.title())
-        self.tree.column("id",       width=50,  anchor="center")
-        self.tree.column("date",     width=100, anchor="center")
-        self.tree.column("vendor",   width=130)
-        self.tree.column("item",     width=140)
-        self.tree.column("amount",   width=90,  anchor="e")
-        self.tree.column("approval", width=90,  anchor="center")
-        self.tree.column("payment",  width=85,  anchor="center")
-        self.tree.column("actions",  width=150, anchor="center")
+        self.tree.column("id",         width=50,  anchor="center")
+        self.tree.column("date",       width=95,  anchor="center")
+        self.tree.column("type",       width=90,  anchor="center")
+        self.tree.column("purpose",    width=160)
+        self.tree.column("amount",     width=90,  anchor="e")
+        self.tree.column("approval",   width=110, anchor="center")
+        self.tree.column("completion", width=130, anchor="center")
+        self.tree.column("actions",    width=160, anchor="center")
 
         vs = ttk.Scrollbar(right, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vs.set)
@@ -525,9 +474,9 @@ class FactoryLocalClient:
                              font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
                              padx=8, pady=4, bd=0)
 
-        _abtn(act_row, "\u270f  Edit",   self.edit_selected).pack(side="left", padx=(0, 4))
-        _abtn(act_row, "\U0001f5d1  Delete", self.delete_selected, "#b71c1c").pack(side="left", padx=(0, 4))
-        _abtn(act_row, "\U0001f9fe  View Bill", self.view_bill_selected, "#1565a0").pack(side="left")
+        _abtn(act_row, "\U0001f5d1  Delete",         self.delete_selected,      "#b71c1c").pack(side="left", padx=(0, 4))
+        _abtn(act_row, "\U0001f9fe  View Bill",       self.view_bill_selected,   "#1565a0").pack(side="left", padx=(0, 4))
+        _abtn(act_row, "\u2705  Submit Completion",  self.completion_selected,  "#0d5c2e").pack(side="left")
 
     def _build_bill_upload_tab(self) -> None:
         frame = ttk.LabelFrame(self.bill_frame, text="Upload Actual Bill (Quick)", padding=14)
@@ -566,32 +515,11 @@ class FactoryLocalClient:
                   bg="#546e7a", fg="white", font=("Segoe UI", 9, "bold"),
                   relief="flat", cursor="hand2", padx=10, pady=5, bd=0).pack(side="left")
 
-    def _recalculate(self, *_) -> None:
-        try:
-            qty = float(self.f_qty.get())
-            rate = float(self.f_rate.get())
-            gst = float(self.f_gst.get() or "0")
-        except ValueError:
-            self.f_amount.set("0.00")
-            self.f_final.set("0.00")
-            return
-        amount = round(qty * rate, 2)
-        final = round(amount + amount * gst / 100, 2)
-        self.f_amount.set(f"{amount:.2f}")
-        self.f_final.set(f"{final:.2f}")
-
     def _on_factory_select(self, _=None) -> None:
         name = self.f_factory_name.get()
         for f in self.factories:
             if f["name"] == name:
                 self.f_factory_id.set(f["id"])
-                return
-
-    def _on_vendor_select(self, _=None) -> None:
-        name = self.f_vendor_name.get()
-        for v in self.vendors:
-            if v["name"] == name:
-                self.f_vendor_id.set(v["id"])
                 return
 
     def _on_bill_factory_select(self, _=None) -> None:
@@ -606,12 +534,6 @@ class FactoryLocalClient:
             filetypes=[("Images & PDFs", "*.jpg *.jpeg *.png *.pdf"), ("All files", "*.*")])
         if path:
             self.b_file_path.set(path)
-
-    def _browse_req_bill(self) -> None:
-        path = filedialog.askopenfilename(title="Select Bill / Quotation",
-            filetypes=[("Images & PDFs", "*.jpg *.jpeg *.png *.pdf"), ("All files", "*.*")])
-        if path:
-            self.req_bill_path.set(path)
 
     def _reset_bill_form(self) -> None:
         self.b_vendor_name.set("")
@@ -676,7 +598,7 @@ class FactoryLocalClient:
     def _load_masters(self) -> None:
         base = DEFAULT_BASE_URL.rstrip("/")
         try:
-            for mtype in ("factories", "vendors", "categories", "units"):
+            for mtype in ("factories",):
                 r = self.session.get(f"{base}/masters/{mtype}", timeout=15)
                 if r.status_code != 200:
                     continue
@@ -696,27 +618,15 @@ class FactoryLocalClient:
             rows = conn.execute("SELECT id, name FROM masters_cache WHERE type='factories' ORDER BY name").fetchall()
             self.factories = [{"id": r[0], "name": r[1]} for r in rows]
             fnames = [f["name"] for f in self.factories]
-            self.factory_combo["values"] = fnames
-            self.bill_factory_combo["values"] = fnames
+            if hasattr(self, "factory_combo"):
+                self.factory_combo["values"] = fnames
+            if hasattr(self, "bill_factory_combo"):
+                self.bill_factory_combo["values"] = fnames
             if fnames and not self.f_factory_name.get():
-                self.f_factory_name.set(fnames[0]); self.b_factory_name.set(fnames[0])
-                self._on_factory_select(); self._on_bill_factory_select()
-
-            rows = conn.execute("SELECT id, name FROM masters_cache WHERE type='vendors' ORDER BY name").fetchall()
-            self.vendors = [{"id": r[0], "name": r[1]} for r in rows]
-            self.vendor_combo["values"] = [v["name"] for v in self.vendors]
-
-            rows = conn.execute("SELECT name FROM masters_cache WHERE type='categories' ORDER BY name").fetchall()
-            cats = [r[0] for r in rows]
-            self.category_combo["values"] = cats
-            if cats and not self.f_category.get():
-                self.f_category.set(cats[0])
-
-            rows = conn.execute("SELECT name FROM masters_cache WHERE type='units' ORDER BY name").fetchall()
-            units = [r[0] for r in rows]
-            self.unit_combo["values"] = units
-            if units and not self.f_unit.get():
-                self.f_unit.set(units[0])
+                self.f_factory_name.set(fnames[0])
+                self._on_factory_select()
+                self.b_factory_name.set(fnames[0])
+                self._on_bill_factory_select()
 
     def sync_from_server(self, silent: bool = False) -> None:
         base = DEFAULT_BASE_URL.rstrip("/")
@@ -747,8 +657,9 @@ class FactoryLocalClient:
                     INSERT INTO my_requests (id,request_date,item_category,vendor,item_name,
                         qty,unit,rate,gst_percent,amount,final_amount,reason,urgent_flag,
                         requested_by,notes,vendor_id,factory_id,vendor_mobile,approval_status,
-                        payment_status,approval_remark,bill_image_path,updated_at,synced_at,prev_status)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        payment_status,approval_remark,bill_image_path,updated_at,synced_at,prev_status,
+                        request_type,purpose,completion_status)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(id) DO UPDATE SET
                         request_date=excluded.request_date, item_category=excluded.item_category,
                         vendor=excluded.vendor, item_name=excluded.item_name, qty=excluded.qty,
@@ -761,6 +672,8 @@ class FactoryLocalClient:
                         payment_status=excluded.payment_status, approval_remark=excluded.approval_remark,
                         bill_image_path=excluded.bill_image_path, updated_at=excluded.updated_at,
                         synced_at=excluded.synced_at,
+                        request_type=excluded.request_type, purpose=excluded.purpose,
+                        completion_status=excluded.completion_status,
                         prev_status=CASE WHEN my_requests.approval_status != excluded.approval_status
                                     THEN my_requests.approval_status ELSE my_requests.prev_status END
                     """,
@@ -770,7 +683,10 @@ class FactoryLocalClient:
                      it.get("reason"), 1 if it.get("urgent_flag") else 0, it.get("requested_by"),
                      it.get("notes"), it.get("vendor_id"), it.get("factory_id"), it.get("vendor_mobile"),
                      it.get("approval_status"), it.get("payment_status"), it.get("approval_remark"),
-                     it.get("bill_image_path"), it.get("updated_at"), now, prev_status))
+                     it.get("bill_image_path"), it.get("updated_at"), now, prev_status,
+                     it.get("request_type") or it.get("item_category"),
+                     it.get("purpose") or it.get("item_name"),
+                     it.get("completion_status") or "Pending"))
             conn.commit()
 
     def _load_my_requests_from_cache(self) -> None:
@@ -778,49 +694,49 @@ class FactoryLocalClient:
         for row in self.tree.get_children():
             self.tree.delete(row)
 
-        filt_date   = self.filt_date.get().strip()
-        filt_vendor = self.filt_vendor.get().strip().lower()
-        filt_status = self.filt_status.get().strip()
+        filt_status     = self.filt_status.get().strip()
+        filt_completion = self.filt_completion.get().strip()
 
         status_changed = []
         with sqlite3.connect(db_path()) as conn:
             rows = conn.execute("""
-                SELECT id, request_date, vendor, item_name, final_amount,
-                       approval_status, payment_status, bill_image_path, prev_status, approval_remark
+                SELECT id, request_date, request_type, purpose, final_amount,
+                       approval_status, completion_status, bill_image_path, prev_status, approval_remark
                 FROM my_requests ORDER BY id DESC
             """).fetchall()
 
         for r in rows:
             req_id = int(r[0])
-            approval_status = r[5] or "Pending"
-            # Backward compat: old server may still return "Hold"
+            approval_status    = r[5] or "Pending"
+            completion_status  = r[6] or "Pending"
             if approval_status == "Hold":
                 approval_status = "Partial Approved"
             prev_status = r[8]
             self.bill_paths[req_id] = r[7] or ""
 
-            if filt_date and (r[1] or "") and filt_date not in (r[1] or ""):
-                continue
-            if filt_vendor and filt_vendor not in (r[2] or "").lower():
-                continue
             if filt_status and approval_status != filt_status:
+                continue
+            if filt_completion and completion_status != filt_completion:
                 continue
 
             changed = prev_status is not None and prev_status != approval_status
             if changed:
                 status_changed.append((req_id, prev_status, approval_status, r[3], r[9]))
 
-            editable = approval_status in ("Pending", "Draft", "Hold", "Partial Approved")
             actions = []
-            if editable:
-                actions += ["[Edit]", "[Delete]"]
+            if approval_status in ("Pending", "Draft"):
+                actions.append("[Delete]")
+            if completion_status == "Awaiting Completion":
+                actions.append("[Submit Completion]")
             if self.bill_paths[req_id]:
                 actions.append("[Bill]")
 
-            row_vals = (req_id, r[1], r[2], r[3],
+            req_type = r[2] or ""
+            purpose  = r[3] or ""
+            row_vals = (req_id, r[1], req_type, purpose[:40],
                         f"{float(r[4]):.2f}" if r[4] else "0.00",
-                        approval_status, r[6] or "", "  ".join(actions))
-            tag = "new_status" if changed else approval_status
+                        approval_status, completion_status, "  ".join(actions))
+            tag = "new_status" if changed else ("awaiting_comp" if completion_status == "Awaiting Completion" else approval_status)
             self.tree.insert("", "end", values=row_vals, tags=(tag,), iid=str(req_id))
 
         if status_changed:
@@ -828,9 +744,15 @@ class FactoryLocalClient:
 
         badge = len(status_changed)
         label = "Create Request" + (f" ({badge} updates)" if badge else "")
-        self.notebook.tab(self.request_frame, text=label)
+        if hasattr(self, "notebook") and self.notebook:
+            self.notebook.tab(self.request_frame, text=label)
 
     def _apply_filters(self) -> None:
+        self._load_my_requests_from_cache()
+
+    def _clear_filters(self) -> None:
+        self.filt_status.set("")
+        self.filt_completion.set("")
         self._load_my_requests_from_cache()
 
     def _notify_status_changes(self, changes: list) -> None:
@@ -844,12 +766,9 @@ class FactoryLocalClient:
                 conn.commit()
 
     def submit_request(self) -> None:
-        self._do_submit(save_as_draft=False)
+        self._do_submit()
 
-    def save_draft(self) -> None:
-        self._do_submit(save_as_draft=True)
-
-    def _do_submit(self, save_as_draft: bool) -> None:
+    def _do_submit(self) -> None:
         if not self.logged_in:
             messagebox.showerror("Error", "Please login first.")
             return
@@ -858,129 +777,168 @@ class FactoryLocalClient:
         except RuntimeError as exc:
             messagebox.showerror("Security Error", str(exc))
             return
-        try:
-            datetime.strptime(self.f_date.get().strip(), "%Y-%m-%d")
-        except ValueError:
-            self._req_status("Date must be YYYY-MM-DD", error=True)
-            return
         if self.f_factory_id.get() <= 0:
             self._req_status("Select a factory.", error=True); return
-        if self.f_vendor_id.get() <= 0:
-            self._req_status("Select a vendor.", error=True); return
-        if not self.f_category.get().strip():
-            self._req_status("Select a category.", error=True); return
-        if not self.f_item.get().strip():
-            self._req_status("Enter item name.", error=True); return
+        if not self.f_request_type.get().strip():
+            self._req_status("Select a request type.", error=True); return
+        purpose = self.purpose_text.get("1.0", "end").strip()
+        if not purpose:
+            self._req_status("Purpose is required.", error=True); return
+        amt_str = self.f_req_amount.get().strip()
         try:
-            qty = float(self.f_qty.get())
-            rate = float(self.f_rate.get())
-            gst = float(self.f_gst.get() or "0")
-            if qty <= 0 or rate <= 0:
+            amount = float(amt_str)
+            if amount <= 0:
                 raise ValueError
         except ValueError:
-            self._req_status("Qty and Rate must be valid positive numbers.", error=True); return
-        reason = self.reason_text.get("1.0", "end").strip()
-        if not reason:
-            self._req_status("Reason / Urgency is required.", error=True); return
-        if not self.f_requested_by.get().strip():
-            self._req_status("Requested By is required.", error=True); return
-        bill_path = self.req_bill_path.get().strip()
-        if not save_as_draft and not bill_path and not self.edit_request_id:
-            self._req_status("Upload Bill / Quotation image is required before submitting.", error=True); return
+            self._req_status("Amount must be a positive number.", error=True); return
 
-        amount = round(qty * rate, 2)
-        final = round(amount + amount * gst / 100, 2)
         data = {
-            "request_date": self.f_date.get().strip(),
             "factory_id": str(self.f_factory_id.get()),
-            "vendor_id": str(self.f_vendor_id.get()),
-            "vendor_mobile": self.f_vendor_mobile.get().strip(),
-            "item_category": self.f_category.get().strip(),
-            "item_name": self.f_item.get().strip(),
-            "qty": str(qty), "unit": self.f_unit.get().strip(), "rate": str(rate),
-            "amount": str(amount), "gst_percent": str(gst), "final_amount": str(final),
-            "reason": reason, "urgent_flag": self.f_urgent.get(),
-            "requested_by": self.f_requested_by.get().strip(),
-            "notes": self.notes_text.get("1.0", "end").strip(),
-            "save_as_draft": "true" if save_as_draft else "false",
+            "request_type": self.f_request_type.get().strip(),
+            "purpose": purpose,
+            "amount": str(amount),
         }
-        files = {}
-        if bill_path and Path(bill_path).exists():
-            files["bill_image"] = open(bill_path, "rb")
-        url = f"{base}/requests/{self.edit_request_id}" if self.edit_request_id else f"{base}/requests"
-        method = "PUT" if self.edit_request_id else "POST"
+        remarks = self.f_remarks.get().strip()
+        if remarks:
+            data["remarks"] = remarks
 
-        self.submit_btn.config(state="disabled"); self.draft_btn.config(state="disabled")
+        self.submit_btn.config(state="disabled")
         self._req_status("Submitting, please wait...", error=False)
         try:
-            r = self.session.request(method, url, data=data, files=files or None, timeout=30)
+            r = self.session.post(f"{base}/requests/factory", data=data, timeout=30)
             body = r.json() if r.headers.get("Content-Type", "").startswith("application/json") else {}
             if r.status_code != 200:
                 detail = body.get("detail", f"HTTP {r.status_code}")
                 if isinstance(detail, list):
                     detail = detail[0].get("msg", str(detail))
                 if self._should_retry_response(r.status_code):
-                    endpoint = f"/requests/{self.edit_request_id}" if self.edit_request_id else "/requests"
-                    self._enqueue_pending_upload("request", method, endpoint, data, bill_path or None, str(detail))
+                    self._enqueue_pending_upload("request", "POST", "/requests/factory", data, None, str(detail))
                     self._req_status("Offline queue: request saved locally and will retry automatically.", error=False)
                     self.clear_request_form()
                 else:
                     self._req_status(str(detail), error=True)
             else:
-                self._req_status(f"✓ {body.get('message', 'Saved!')}", error=False)
+                self._req_status(f"✓ {body.get('message', 'Request submitted!')}", error=False)
                 self.clear_request_form()
                 self.sync_from_server(silent=True)
         except Exception as exc:
-            endpoint = f"/requests/{self.edit_request_id}" if self.edit_request_id else "/requests"
-            self._enqueue_pending_upload("request", method, endpoint, data, bill_path or None, str(exc))
+            self._enqueue_pending_upload("request", "POST", "/requests/factory", data, None, str(exc))
             self._req_status("Offline queue: request saved locally and will retry automatically.", error=False)
             self.clear_request_form()
         finally:
-            if "bill_image" in files:
-                files["bill_image"].close()
-            self.submit_btn.config(state="normal"); self.draft_btn.config(state="normal")
+            self.submit_btn.config(state="normal")
 
-    def edit_selected(self) -> None:
+    def completion_selected(self) -> None:
         item = self.tree.focus()
         if not item:
-            messagebox.showwarning("Select", "Select a request to edit."); return
+            messagebox.showwarning("Select", "Select a request to submit completion."); return
         req_id = int(item)
         with sqlite3.connect(db_path()) as conn:
-            row = conn.execute("""SELECT request_date, factory_id, vendor_id, vendor_mobile,
-                item_category, item_name, qty, unit, rate, gst_percent, reason, urgent_flag,
-                requested_by, notes, approval_status FROM my_requests WHERE id=?""", (req_id,)).fetchone()
+            row = conn.execute("SELECT completion_status FROM my_requests WHERE id=?", (req_id,)).fetchone()
         if not row:
             messagebox.showerror("Error", "Request not found. Sync first."); return
-        if row[14] not in ("Pending", "Draft", "Hold", "Partial Approved"):
-            messagebox.showwarning("Edit", f"Cannot edit: status is {row[14]}"); return
+        comp_status = row[0] or "Pending"
+        if comp_status != "Awaiting Completion":
+            messagebox.showwarning("Completion", f"Cannot submit completion: status is '{comp_status}'.\n"
+                                   "Only requests with 'Awaiting Completion' status can be submitted."); return
+        self.open_completion_dialog(req_id)
 
-        self.edit_request_id = req_id
-        self.f_date.set(row[0] or str(date.today()))
-        fid = int(row[1] or 0)
-        for f in self.factories:
-            if f["id"] == fid:
-                self.f_factory_name.set(f["name"]); self.f_factory_id.set(fid); break
-        vid = int(row[2] or 0)
-        for v in self.vendors:
-            if v["id"] == vid:
-                self.f_vendor_name.set(v["name"]); self.f_vendor_id.set(vid); break
-        self.f_vendor_mobile.set(row[3] or "")
-        self.f_category.set(row[4] or "")
-        self.f_item.set(row[5] or "")
-        self.f_qty.set(str(row[6] or ""))
-        self.f_unit.set(row[7] or "")
-        self.f_rate.set(str(row[8] or ""))
-        self.f_gst.set(str(row[9] or "0"))
-        self.reason_text.delete("1.0", "end")
-        self.reason_text.insert("1.0", row[10] or "")
-        self.f_urgent.set("true" if row[11] else "false")
-        self.f_requested_by.set(row[12] or "")
-        self.notes_text.delete("1.0", "end")
-        self.notes_text.insert("1.0", row[13] or "")
-        self.req_bill_path.set("")
-        self._recalculate()
-        self._req_status(f"Editing Request #{req_id}. Re-upload bill only if changing it.", error=False)
-        self.notebook.select(self.request_frame)
+    def open_completion_dialog(self, req_id: int) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Submit Completion — Request #{req_id}")
+        dialog.geometry("500x400")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        veh_var   = tk.StringVar(value="")
+        trans_var = tk.StringVar(value="")
+        file_var  = tk.StringVar(value="")
+
+        ttk.Label(dialog, text="Completion Remark *", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(14, 4))
+        remark_box = tk.Text(dialog, height=5)
+        remark_box.pack(fill="x", padx=14)
+
+        ttk.Label(dialog, text="Vehicle Number (optional)", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(10, 4))
+        ttk.Entry(dialog, textvariable=veh_var).pack(fill="x", padx=14)
+
+        ttk.Label(dialog, text="Transporter Name (optional)", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(10, 4))
+        ttk.Entry(dialog, textvariable=trans_var).pack(fill="x", padx=14)
+
+        file_row = ttk.Frame(dialog)
+        file_row.pack(fill="x", padx=14, pady=(10, 0))
+        ttk.Label(file_row, text="Completion Bill (optional):", font=("Segoe UI", 10, "bold")).pack(side="left")
+        ttk.Entry(file_row, textvariable=file_var, state="readonly", width=30).pack(side="left", padx=(6, 4))
+        def _browse():
+            path = filedialog.askopenfilename(title="Select Bill Image",
+                filetypes=[("Images & PDFs", "*.jpg *.jpeg *.png *.pdf"), ("All files", "*.*")])
+            if path:
+                file_var.set(path)
+        ttk.Button(file_row, text="Browse", command=_browse).pack(side="left")
+
+        status_var = tk.StringVar(value="")
+        status_lbl = ttk.Label(dialog, textvariable=status_var, wraplength=460, justify="left")
+        status_lbl.pack(fill="x", padx=14, pady=(8, 0))
+
+        def on_submit() -> None:
+            remark = remark_box.get("1.0", "end").strip()
+            if not remark:
+                status_var.set("Completion remark is required.")
+                status_lbl.configure(foreground="#b02a37")
+                return
+            if not self.logged_in:
+                status_var.set("Please login first.")
+                status_lbl.configure(foreground="#b02a37")
+                return
+            try:
+                base = self._server_url()
+            except RuntimeError as exc:
+                status_var.set(str(exc))
+                status_lbl.configure(foreground="#b02a37")
+                return
+
+            data = {"completion_remark": remark}
+            if veh_var.get().strip():
+                data["vehicle_number"] = veh_var.get().strip()
+            if trans_var.get().strip():
+                data["transporter_name"] = trans_var.get().strip()
+
+            file_path = file_var.get().strip()
+            files = {}
+            file_handle = None
+            if file_path and Path(file_path).exists():
+                file_handle = open(file_path, "rb")
+                files = {"completion_file": file_handle}
+
+            status_var.set("Submitting…")
+            status_lbl.configure(foreground="#555")
+            try:
+                r = self.session.post(f"{base}/requests/{req_id}/complete",
+                                      data=data, files=files or None, timeout=30)
+                body = r.json() if r.headers.get("Content-Type", "").startswith("application/json") else {}
+                if r.status_code == 200:
+                    status_var.set(f"✓ {body.get('message', 'Completion submitted!')}")
+                    status_lbl.configure(foreground="#1f8a43")
+                    self.sync_from_server(silent=True)
+                    self.root.after(1000, dialog.destroy)
+                else:
+                    detail = body.get("detail", f"HTTP {r.status_code}")
+                    if isinstance(detail, list):
+                        detail = detail[0].get("msg", str(detail))
+                    status_var.set(str(detail))
+                    status_lbl.configure(foreground="#b02a37")
+            except Exception as exc:
+                status_var.set(f"Error: {exc}")
+                status_lbl.configure(foreground="#b02a37")
+            finally:
+                if file_handle:
+                    file_handle.close()
+
+        btn_row = ttk.Frame(dialog)
+        btn_row.pack(fill="x", padx=14, pady=12)
+        ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(btn_row, text="Submit Completion", command=on_submit).pack(side="right")
+        dialog.wait_window()
 
     def delete_selected(self) -> None:
         item = self.tree.focus()
@@ -991,7 +949,7 @@ class FactoryLocalClient:
             row = conn.execute("SELECT approval_status FROM my_requests WHERE id=?", (req_id,)).fetchone()
         if not row:
             return
-        if row[0] not in ("Pending", "Draft", "Hold", "Partial Approved"):
+        if row[0] not in ("Pending", "Draft"):
             messagebox.showwarning("Delete", f"Cannot delete: status is {row[0]}"); return
         if not messagebox.askyesno("Delete", f"Delete request #{req_id}?"):
             return
@@ -1074,14 +1032,13 @@ class FactoryLocalClient:
 
     def clear_request_form(self) -> None:
         self.edit_request_id = None
-        self.f_date.set(str(date.today()))
-        self.f_vendor_mobile.set(""); self.f_item.set("")
-        self.f_qty.set(""); self.f_rate.set(""); self.f_gst.set("0")
-        self.f_amount.set("0.00"); self.f_final.set("0.00")
-        self.reason_text.delete("1.0", "end")
-        self.f_urgent.set("false")
-        self.notes_text.delete("1.0", "end")
-        self.req_bill_path.set(""); self.req_status_var.set("")
+        self.f_request_type.set("Material")
+        self.f_req_amount.set("")
+        self.f_remarks.set("")
+        if hasattr(self, "purpose_text"):
+            self.purpose_text.delete("1.0", "end")
+        if hasattr(self, "req_status_var"):
+            self.req_status_var.set("")
 
     def _req_status(self, msg: str, error: bool = False) -> None:
         self.req_status_var.set(msg)

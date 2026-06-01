@@ -68,6 +68,21 @@ def _as_dict(req: PurchaseRequest) -> dict:
         "distance_from_factory_m": req.distance_from_factory_m,
         "bill_image_path": req.bill_image_path,
         "notes": req.notes,
+        # Factory workflow v2 fields
+        "request_type": req.request_type,
+        "purpose": req.purpose,
+        "completion_status": req.completion_status,
+        "completion_remark": req.completion_remark,
+        "completion_bill_path": req.completion_bill_path,
+        "completion_vehicle_number": req.completion_vehicle_number,
+        "completion_transporter_name": req.completion_transporter_name,
+        "completion_submitted_at": str(req.completion_submitted_at) if req.completion_submitted_at else None,
+        # Admin verification
+        "verified_by": req.verified_by,
+        "verified_at": str(req.verified_at) if req.verified_at else None,
+        "verified_remark": req.verified_remark,
+        "closed_by": req.closed_by,
+        #
         "approval_status": req.approval_status,
         "approved_amount": req.approved_amount,
         "approval_remark": req.approval_remark,
@@ -278,6 +293,9 @@ def create_request(
     notes: str | None = Form(None),
     save_as_draft: bool = Form(False),
     bill_image: UploadFile | None = File(None),
+    # Factory workflow v2 simplified fields (optional, take precedence when provided)
+    request_type: str | None = Form(None),
+    purpose: str | None = Form(None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -320,6 +338,9 @@ def create_request(
         distance_from_factory_m=distance_from_factory_m,
         bill_image_path=uploaded_bill_path,
         notes=notes,
+        request_type=request_type,
+        purpose=purpose,
+        completion_status="Pending",
         approval_status="Draft" if save_as_draft else "Pending",
         payment_status="Unpaid",
         is_unread_admin=user.role == "factory",
@@ -363,6 +384,162 @@ def create_request(
     if req.approval_status != "Draft" and not telegram_sent:
         message = "Request saved, but Telegram notification failed"
     return {"message": message, "id": req.id}
+
+
+VALID_REQUEST_TYPES = {"Material", "Labour", "Transport", "Service", "Utility", "Emergency"}
+
+
+@router.post("/requests/factory")
+def create_factory_request(
+    factory_id: int = Form(...),
+    request_type: str = Form(...),
+    purpose: str = Form(...),
+    amount: float = Form(...),
+    remarks: str | None = Form(None),
+    geo_latitude: float | None = Form(None),
+    geo_longitude: float | None = Form(None),
+    geo_accuracy_m: float | None = Form(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Simplified factory request creation — Request Type, Purpose, Amount, Remarks."""
+    if user.role != "factory":
+        raise HTTPException(403, "Only factory users can use this endpoint")
+    if request_type not in VALID_REQUEST_TYPES:
+        raise HTTPException(400, f"Invalid request type. Must be one of: {', '.join(sorted(VALID_REQUEST_TYPES))}")
+    purpose = (purpose or "").strip()
+    if not purpose:
+        raise HTTPException(400, "Purpose is required")
+    if amount <= 0:
+        raise HTTPException(400, "Amount must be greater than zero")
+
+    factory_obj = db.get(Factory, factory_id)
+    if not factory_obj or factory_obj.is_deleted:
+        raise HTTPException(400, "Invalid factory")
+
+    # Use a placeholder vendor (first active vendor)
+    default_vendor = db.scalar(select(Vendor).where(Vendor.is_deleted.is_(False)).order_by(Vendor.id.asc()))
+    if not default_vendor:
+        raise HTTPException(400, "No active vendor found in masters")
+
+    is_in_factory, distance_from_factory_m = _compute_presence(factory_obj, geo_latitude, geo_longitude)
+    geo_captured_at = datetime.utcnow() if geo_latitude is not None and geo_longitude is not None else None
+
+    req = PurchaseRequest(
+        request_date=date.today(),
+        factory_id=factory_id,
+        vendor_id=default_vendor.id,
+        vendor_mobile=None,
+        item_category=request_type,
+        item_name=purpose[:150],
+        qty=1,
+        unit="Nos",
+        rate=round(amount, 2),
+        amount=round(amount, 2),
+        gst_percent=0,
+        final_amount=round(amount, 2),
+        reason=purpose,
+        urgent_flag=False,
+        requested_by=user.name,
+        requested_by_user_id=user.id,
+        geo_latitude=geo_latitude,
+        geo_longitude=geo_longitude,
+        geo_accuracy_m=geo_accuracy_m,
+        geo_captured_at=geo_captured_at,
+        is_in_factory=is_in_factory,
+        distance_from_factory_m=distance_from_factory_m,
+        notes=remarks,
+        request_type=request_type,
+        purpose=purpose,
+        completion_status="Pending",
+        approval_status="Pending",
+        payment_status="Unpaid",
+        is_unread_admin=True,
+    )
+    try:
+        db.add(req)
+        _upsert_presence(
+            db,
+            user_id=user.id,
+            factory_id=factory_id,
+            latitude=geo_latitude,
+            longitude=geo_longitude,
+            accuracy_m=geo_accuracy_m,
+            captured_at=geo_captured_at,
+            is_in_factory=is_in_factory,
+            distance_from_factory_m=distance_from_factory_m,
+        )
+        db.flush()
+        log_change(db, entity="purchase_request", entity_id=req.id, action="CREATE_FACTORY", new_value=_as_dict(req), changed_by=user.id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(500, f"Failed to save request: {exc}") from exc
+
+    telegram_sent = _notify_request_submission(
+        db=db,
+        req=req,
+        factory_id=factory_id,
+        vendor_id=default_vendor.id,
+        vendor_mobile=None,
+        item_name=purpose[:150],
+        requested_by=user.name,
+        urgent_flag=False,
+    )
+
+    message = "Request submitted" if telegram_sent else "Request submitted, but Telegram notification failed"
+    return {"message": message, "id": req.id}
+
+
+@router.post("/requests/{request_id}/complete")
+def submit_completion(
+    request_id: int,
+    completion_remark: str = Form(...),
+    vehicle_number: str | None = Form(None),
+    transporter_name: str | None = Form(None),
+    completion_file: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Factory user submits completion details after admin has fully paid."""
+    if user.role != "factory":
+        raise HTTPException(403, "Only factory users can submit completion")
+
+    req = db.get(PurchaseRequest, request_id)
+    if not req or req.is_deleted:
+        raise HTTPException(404, "Request not found")
+    if req.requested_by_user_id != user.id:
+        raise HTTPException(403, "Not authorized")
+    if req.completion_status != "Awaiting Completion":
+        raise HTTPException(400, "This request is not awaiting completion")
+
+    remark = (completion_remark or "").strip()
+    if not remark:
+        raise HTTPException(400, "Completion remark is required")
+
+    uploaded_path = _save_file(completion_file)
+
+    old = _as_dict(req)
+    req.completion_status = "Completion Submitted"
+    req.completion_remark = remark
+    req.completion_submitted_at = datetime.utcnow()
+    if uploaded_path:
+        req.completion_bill_path = uploaded_path
+    if vehicle_number:
+        req.completion_vehicle_number = (vehicle_number or "").strip() or None
+    if transporter_name:
+        req.completion_transporter_name = (transporter_name or "").strip() or None
+
+    log_change(db, entity="purchase_request", entity_id=req.id, action="COMPLETION_SUBMIT", old_value=old, new_value=_as_dict(req), changed_by=user.id)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        if uploaded_path:
+            _delete_file(uploaded_path)
+        raise HTTPException(500, f"Failed to submit completion: {exc}") from exc
+
+    return {"message": "Completion submitted successfully"}
 
 
 @router.post("/requests/simple-bill")
@@ -486,6 +663,8 @@ def list_requests(
     factory_id: int | None = Query(None),
     status: str | None = Query(None),
     payment_status: str | None = Query(None),
+    completion_status: str | None = Query(None),
+    request_type: str | None = Query(None),
     item_category: str | None = Query(None),
     search: str | None = Query(None),
     db: Session = Depends(get_db),
@@ -506,6 +685,10 @@ def list_requests(
         query = query.where(PurchaseRequest.approval_status == status)
     if payment_status:
         query = query.where(PurchaseRequest.payment_status == payment_status)
+    if completion_status:
+        query = query.where(PurchaseRequest.completion_status == completion_status)
+    if request_type:
+        query = query.where(PurchaseRequest.request_type == request_type)
     if item_category:
         query = query.where(PurchaseRequest.item_category == item_category)
     if vendor:
@@ -838,6 +1021,7 @@ def approve_request(
     old = _as_dict(req)
     req.approval_status = "Approved"
     req.payment_status = "Paid"
+    req.completion_status = "Awaiting Completion"
     req.approved_amount = approved_amount
     req.approval_remark = remarks
     req.priority = priority
@@ -986,6 +1170,7 @@ def partial_approve_request(
     if balance <= 0.001:
         req.payment_status = "Paid"
         req.approval_status = "Approved"
+        req.completion_status = "Awaiting Completion"
     else:
         req.payment_status = "Partially Paid"
         req.approval_status = "Partial Approved"
@@ -1115,6 +1300,7 @@ def mark_paid(
 
     if balance == 0:
         req.payment_status = "Paid"
+        req.completion_status = "Awaiting Completion"
         if req.approval_status == "Partial Approved":
             req.approval_status = "Approved"
     elif new_total_paid > 0:
@@ -1160,3 +1346,68 @@ def mark_notifications_read(db: Session = Depends(get_db), user: User = Depends(
         row.is_unread_admin = False
     db.commit()
     return {"message": "Notifications marked as read"}
+
+
+@router.post("/requests/{request_id}/verify")
+def verify_request(
+    request_id: int,
+    closing_remarks: str | None = Form(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(admin_required),
+):
+    req = db.get(PurchaseRequest, request_id)
+    if not req or req.is_deleted:
+        raise HTTPException(404, "Request not found")
+    if req.completion_status != "Completion Submitted":
+        raise HTTPException(400, "Request must be in 'Completion Submitted' state to verify")
+
+    old = _as_dict(req)
+    req.completion_status = "Closed"
+    req.verified_by = user.id
+    req.verified_at = datetime.utcnow()
+    req.verified_remark = closing_remarks
+    req.closed_by = user.id
+
+    log_change(
+        db,
+        entity="purchase_request",
+        entity_id=req.id,
+        action="VERIFY_CLOSE",
+        old_value=old,
+        new_value=_as_dict(req),
+        changed_by=user.id,
+    )
+    db.commit()
+    return {"message": "Request verified and closed"}
+
+
+@router.post("/requests/{request_id}/reopen")
+def reopen_completion(
+    request_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(admin_required),
+):
+    req = db.get(PurchaseRequest, request_id)
+    if not req or req.is_deleted:
+        raise HTTPException(404, "Request not found")
+    if req.completion_status not in ("Completion Submitted", "Closed"):
+        raise HTTPException(400, "Nothing to reopen")
+
+    old = _as_dict(req)
+    req.completion_status = "Awaiting Completion"
+    req.verified_by = None
+    req.verified_at = None
+    req.verified_remark = None
+    req.closed_by = None
+
+    log_change(
+        db,
+        entity="purchase_request",
+        entity_id=req.id,
+        action="REOPEN_COMPLETION",
+        old_value=old,
+        new_value=_as_dict(req),
+        changed_by=user.id,
+    )
+    db.commit()
+    return {"message": "Completion reopened for factory resubmission"}

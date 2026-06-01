@@ -3,17 +3,23 @@ const simpleBillBody = document.querySelector('#billUploadTable tbody');
 const presenceBody = document.querySelector('#presenceTable tbody');
 let prevUnread = 0;
 let requestFilterActive = false;
-const ADMIN_REQ_CACHE_KEY = 'admin_requests_cache_v1';
-const ADMIN_FILTER_CACHE_KEY = 'admin_request_filters_v1';
+const ADMIN_REQ_CACHE_KEY = 'admin_requests_cache_v2';
+const ADMIN_FILTER_CACHE_KEY = 'admin_request_filters_v2';
+let requestsMap = {};
+
+function escHtml(str) {
+  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 
 function getFilterValues() {
   return {
     fFrom: document.getElementById('fFrom')?.value || '',
     fTo: document.getElementById('fTo')?.value || '',
     fFactory: document.getElementById('fFactory')?.value || '',
-    fVendor: document.getElementById('fVendor')?.value || '',
+    fType: document.getElementById('fType')?.value || '',
     fStatus: document.getElementById('fStatus')?.value || '',
     fPayment: document.getElementById('fPayment')?.value || '',
+    fCompletion: document.getElementById('fCompletion')?.value || '',
   };
 }
 
@@ -22,7 +28,7 @@ function applySavedFilters() {
     const raw = localStorage.getItem(ADMIN_FILTER_CACHE_KEY);
     if (!raw) return;
     const saved = JSON.parse(raw);
-    ['fFrom', 'fTo', 'fFactory', 'fVendor', 'fStatus', 'fPayment'].forEach((id) => {
+    ['fFrom', 'fTo', 'fFactory', 'fType', 'fStatus', 'fPayment', 'fCompletion'].forEach((id) => {
       const el = document.getElementById(id);
       if (el && typeof saved[id] === 'string') el.value = saved[id];
     });
@@ -65,31 +71,46 @@ function cacheRequests(items) {
 }
 
 function renderRequests(items) {
+  requestsMap = {};
   reqBody.innerHTML = '';
   (items || []).forEach(it => {
+    requestsMap[it.id] = it;
     const tr = document.createElement('tr');
     if (it.is_unread_admin) tr.classList.add('new-row');
+    const reqType = escHtml(it.request_type || it.item_category || '—');
+    const purposeFull = it.purpose || it.reason || '';
+    const purpose = escHtml(purposeFull.substring(0, 50));
+    const reqAmt = Number(it.final_amount || 0).toFixed(2);
+    const paidAmt = Number(it.total_paid || 0).toFixed(2);
+    const balance = Math.max(Number(it.final_amount || 0) - Number(it.total_paid || 0), 0).toFixed(2);
+    const compStatus = it.completion_status || 'Pending';
+    const approvalStatus = it.approval_status || 'Pending';
+    const isPending = approvalStatus === 'Pending' || approvalStatus === 'Draft';
+    const isPartial = approvalStatus === 'Partial Approved' || approvalStatus === 'Hold';
+    const isCompSubmitted = compStatus === 'Completion Submitted';
+    const isClosed = compStatus === 'Closed';
+
     tr.innerHTML = `
       <td>${it.id}</td>
       <td>${it.request_date}</td>
-      <td>${factoryNameFromId(it.factory_id)}</td>
-      <td>${it.vendor || ''}</td>
-      <td>${it.item_name}</td>
-      <td>${it.qty} ${it.unit}</td>
-      <td>${Number(it.final_amount).toFixed(2)}</td>
-      <td>${it.requested_by}</td>
-      <td>${renderRequestLocation(it)}</td>
-      <td>${b(it.approval_status)}</td>
+      <td>${escHtml(factoryNameFromId(it.factory_id))}</td>
+      <td>${reqType}</td>
+      <td title="${escHtml(purposeFull)}">${purpose}</td>
+      <td>&#8377;${reqAmt}</td>
+      <td>&#8377;${paidAmt}</td>
+      <td>&#8377;${balance}</td>
+      <td>${b(approvalStatus)}</td>
       <td>${b(it.payment_status)}</td>
+      <td>${bComp(compStatus)}</td>
+      <td>${escHtml(it.requested_by || '')}</td>
       <td class="d-flex flex-wrap gap-1">
-        <button class="btn btn-sm btn-outline-secondary" onclick="viewDetails(${it.id})" title="View"><i class="bi bi-eye"></i></button>
+        <button class="btn btn-sm btn-outline-secondary" onclick="viewDetails(${it.id})" title="View Details"><i class="bi bi-eye"></i></button>
         ${it.bill_image_path ? `<a target="_blank" class="btn btn-sm btn-outline-dark" href="/requests/${it.id}/bill" title="Bill"><i class="bi bi-file-earmark-image"></i></a>` : ''}
-        <button class="btn btn-sm btn-outline-primary" onclick="editRequest(${it.id})" title="Edit"><i class="bi bi-pencil"></i></button>
-        <button class="btn btn-sm btn-success" onclick="openApprove(${it.id})" title="Approve"><i class="bi bi-check-lg"></i></button>
-        <button class="btn btn-sm btn-danger" onclick="openReject(${it.id})" title="Reject"><i class="bi bi-x-lg"></i></button>
-        <button class="btn btn-sm btn-warning text-dark" onclick="holdRequest(${it.id})" title="Partial Approved"><i class="bi bi-hourglass-split"></i></button>
-        <button class="btn btn-sm btn-primary" onclick="openPay(${it.id})" title="Mark Paid"><i class="bi bi-currency-rupee"></i></button>
-        <button class="btn btn-sm btn-outline-danger" onclick="deleteRequest(${it.id})" title="Delete"><i class="bi bi-trash"></i></button>
+        ${(isPending || isPartial) ? `<button class="btn btn-sm btn-success" onclick="openApprove(${it.id})" title="${isPending ? 'Approve' : 'Add Payment'}"><i class="bi bi-${isPending ? 'check-lg' : 'plus-circle'}"></i> ${isPending ? 'Approve' : 'Pay'}</button>` : ''}
+        ${(isPending || isPartial) ? `<button class="btn btn-sm btn-danger" onclick="openReject(${it.id})" title="Reject"><i class="bi bi-x-lg"></i></button>` : ''}
+        ${isCompSubmitted ? `<button class="btn btn-sm btn-success" onclick="openVerify(${it.id})" title="Verify &amp; Close"><i class="bi bi-patch-check"></i> Verify</button>` : ''}
+        ${(isCompSubmitted || isClosed) ? `<button class="btn btn-sm btn-warning text-dark" onclick="reopenRequest(${it.id})" title="Reopen"><i class="bi bi-arrow-counterclockwise"></i></button>` : ''}
+        ${isPending ? `<button class="btn btn-sm btn-outline-danger" onclick="deleteRequest(${it.id})" title="Delete"><i class="bi bi-trash"></i></button>` : ''}
       </td>
     `;
     reqBody.appendChild(tr);
@@ -163,9 +184,19 @@ function b(status) {
   if (status === 'Approved') return '<span class="badge badge-approved">✅ Approved</span>';
   if (status === 'Rejected') return '<span class="badge badge-rejected">❌ Rejected</span>';
   if (status === 'Paid')     return '<span class="badge badge-paid">💳 Paid</span>';
+  if (status === 'Partially Paid') return '<span class="badge badge-hold">🔶 Partially Paid</span>';
   if (status === 'Partial Approved' || status === 'Hold') return '<span class="badge badge-hold">🔶 Partial Approved</span>';
+  if (status === 'Unpaid')   return '<span class="badge badge-draft">💰 Unpaid</span>';
   if (status === 'Draft')    return '<span class="badge badge-draft">📝 Draft</span>';
   return `<span class="badge badge-draft">${status || '—'}</span>`;
+}
+
+function bComp(status) {
+  if (status === 'Pending') return '<span class="badge text-bg-secondary">— Pending</span>';
+  if (status === 'Awaiting Completion') return '<span class="badge text-bg-warning text-dark">⏳ Awaiting</span>';
+  if (status === 'Completion Submitted') return '<span class="badge text-bg-primary">📋 Submitted</span>';
+  if (status === 'Closed') return '<span class="badge text-bg-success">✔ Closed</span>';
+  return `<span class="badge text-bg-secondary">${status || '—'}</span>`;
 }
 
 async function loadRequests() {
@@ -176,9 +207,10 @@ async function loadRequests() {
       ['from_date', 'fFrom'],
       ['to_date', 'fTo'],
       ['factory_id', 'fFactory'],
-      ['vendor', 'fVendor'],
+      ['request_type', 'fType'],
       ['status', 'fStatus'],
       ['payment_status', 'fPayment'],
+      ['completion_status', 'fCompletion'],
     ];
     map.forEach(([k, id]) => {
       const val = document.getElementById(id)?.value;
@@ -223,7 +255,7 @@ async function loadSimpleBills() {
 window.loadSimpleBills = loadSimpleBills;
 
 function clearFilters() {
-  ['fFrom', 'fTo', 'fFactory', 'fVendor', 'fStatus', 'fPayment'].forEach(id => {
+  ['fFrom', 'fTo', 'fFactory', 'fType', 'fStatus', 'fPayment', 'fCompletion'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -234,7 +266,22 @@ function clearFilters() {
 window.clearFilters = clearFilters;
 
 function openApprove(id) {
+  const req = requestsMap[id];
+  if (!req) return;
+  const finalAmt = Number(req.final_amount || 0);
+  const paidAmt = Number(req.total_paid || 0);
+  const balance = Math.max(finalAmt - paidAmt, 0);
+  const isPending = req.approval_status === 'Pending' || req.approval_status === 'Draft';
+
   document.getElementById('approveRequestId').value = id;
+  document.getElementById('approveReqAmt').textContent = '\u20B9' + finalAmt.toFixed(2);
+  document.getElementById('approvePaidAmt').textContent = '\u20B9' + paidAmt.toFixed(2);
+  document.getElementById('approveBalance').textContent = '\u20B9' + balance.toFixed(2);
+  document.getElementById('approveAmtInput').value = '';
+  document.getElementById('approveAmtInput').max = balance || finalAmt;
+  document.getElementById('approveRemarks').value = '';
+  document.getElementById('approveModalLabel').textContent = isPending ? 'Approve Request' : 'Release Additional Payment';
+  document.getElementById('approveSubmitBtn').textContent = isPending ? 'Approve' : 'Release Payment';
   new bootstrap.Modal('#approveModal').show();
 }
 window.openApprove = openApprove;
@@ -253,13 +300,7 @@ function openPay(id) {
 window.openPay = openPay;
 
 async function holdRequest(id) {
-  const remarks = prompt('Partial Approved remarks (optional):') || '';
-  const fd = new FormData();
-  fd.append('remarks', remarks);
-  const res = await fetch(`/requests/${id}/hold`, { method: 'POST', body: fd });
-  const data = await res.json();
-  alert(data.message || 'Updated');
-  loadRequests();
+  openApprove(id);
 }
 window.holdRequest = holdRequest;
 
@@ -271,6 +312,34 @@ async function deleteRequest(id) {
   loadRequests();
 }
 window.deleteRequest = deleteRequest;
+
+function openVerify(id) {
+  const req = requestsMap[id];
+  if (!req) return;
+  document.getElementById('verifyRequestId').value = id;
+  document.getElementById('verifyRemarks').value = '';
+  const info = document.getElementById('verifyCompletionInfo');
+  if (info) {
+    const lines = [
+      req.completion_remark ? `<div><strong>Completion Remark:</strong> ${escHtml(req.completion_remark)}</div>` : '',
+      req.completion_vehicle_number ? `<div><strong>Vehicle No:</strong> ${escHtml(req.completion_vehicle_number)}</div>` : '',
+      req.completion_transporter_name ? `<div><strong>Transporter:</strong> ${escHtml(req.completion_transporter_name)}</div>` : '',
+      req.completion_submitted_at ? `<div><strong>Submitted At:</strong> ${escHtml(req.completion_submitted_at)}</div>` : '',
+    ].filter(Boolean);
+    info.innerHTML = lines.length ? lines.join('') : '<span class="text-muted">No completion details</span>';
+  }
+  new bootstrap.Modal('#verifyModal').show();
+}
+window.openVerify = openVerify;
+
+async function reopenRequest(id) {
+  if (!confirm('Reopen this request for factory resubmission?')) return;
+  const res = await fetch(`/requests/${id}/reopen`, { method: 'POST' });
+  const data = await res.json();
+  alert(data.message || data.detail || 'Reopened');
+  loadRequests();
+}
+window.reopenRequest = reopenRequest;
 
 async function editRequest(id) {
   const listRes = await fetch('/requests');
@@ -318,11 +387,36 @@ async function editRequest(id) {
 window.editRequest = editRequest;
 
 async function viewDetails(id) {
-  const listRes = await fetch('/requests');
-  const listData = await listRes.json();
-  const item = (listData.items || []).find(x => x.id === Number(id));
-  if (!item) return;
-  alert(JSON.stringify(item, null, 2));
+  const req = requestsMap[id];
+  if (!req) return;
+  const rows = [
+    ['Request No', req.id],
+    ['Date', req.request_date],
+    ['Request Type', req.request_type || req.item_category || '—'],
+    ['Purpose', req.purpose || req.reason || '—'],
+    ['Factory', factoryNameFromId(req.factory_id)],
+    ['Created By', req.requested_by || '—'],
+    ['Requested Amount', '\u20B9' + Number(req.final_amount || 0).toFixed(2)],
+    ['Total Paid', '\u20B9' + Number(req.total_paid || 0).toFixed(2)],
+    ['Balance', '\u20B9' + Number(req.balance_amount || 0).toFixed(2)],
+    ['Approval Status', req.approval_status || '—'],
+    ['Payment Status', req.payment_status || '—'],
+    ['Completion Status', req.completion_status || '—'],
+    ['Approval Remark', req.approval_remark || '—'],
+    ['Completion Remark', req.completion_remark || '—'],
+    ['Completion Bill', req.completion_bill_path ? '<a href="/requests/' + req.id + '/bill" target="_blank">View Bill</a>' : '—'],
+    ['Vehicle No', req.completion_vehicle_number || '—'],
+    ['Transporter', req.completion_transporter_name || '—'],
+    ['Completion Submitted', req.completion_submitted_at || '—'],
+    ['Verified Remark', req.verified_remark || '—'],
+    ['Verified At', req.verified_at || '—'],
+    ['Created At', req.created_at || '—'],
+  ];
+  const html = '<table class="table table-sm table-bordered">' +
+    rows.map(([k, v]) => `<tr><th class="text-nowrap" style="width:40%">${escHtml(k)}</th><td>${v != null ? String(v) : '—'}</td></tr>`).join('') +
+    '</table>';
+  document.getElementById('viewModalBody').innerHTML = html;
+  new bootstrap.Modal('#viewModal').show();
 }
 window.viewDetails = viewDetails;
 
@@ -331,9 +425,13 @@ document.getElementById('approveForm')?.addEventListener('submit', async (e) => 
   const form = e.target;
   const id = form.request_id.value;
   const fd = new FormData(form);
-  const res = await fetch(`/requests/${id}/approve`, { method: 'POST', body: fd });
+  const res = await fetch(`/requests/${id}/partial-approve`, { method: 'POST', body: fd });
   const data = await res.json();
-  alert(data.message || 'Approved');
+  if (!res.ok) {
+    alert(data.detail || 'Cannot process approval');
+    return;
+  }
+  alert(data.message || 'Updated');
   bootstrap.Modal.getInstance(document.getElementById('approveModal'))?.hide();
   loadRequests();
 });
@@ -347,6 +445,21 @@ document.getElementById('rejectForm')?.addEventListener('submit', async (e) => {
   const data = await res.json();
   alert(data.message || 'Rejected');
   bootstrap.Modal.getInstance(document.getElementById('rejectModal'))?.hide();
+  loadRequests();
+});
+
+document.getElementById('verifyForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = document.getElementById('verifyRequestId').value;
+  const fd = new FormData(e.target);
+  const res = await fetch(`/requests/${id}/verify`, { method: 'POST', body: fd });
+  const data = await res.json();
+  if (!res.ok) {
+    alert(data.detail || 'Cannot verify');
+    return;
+  }
+  alert(data.message || 'Verified and closed');
+  bootstrap.Modal.getInstance(document.getElementById('verifyModal'))?.hide();
   loadRequests();
 });
 

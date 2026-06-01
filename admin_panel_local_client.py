@@ -125,6 +125,7 @@ class AdminLocalClient:
 
         self._last_server_items: list[dict] = []
         self._status_filter: str = ""
+        self._comp_filter: str = ""
 
         self._build_ui()
         self.status_text.set("Please login to load data from server")
@@ -407,7 +408,11 @@ class AdminLocalClient:
         _sep(toolbar_wrap)
         _tbtn(toolbar_wrap, "\u2705 Approve",            self.approve_selected,       "#166534", "#15803d").pack(side="left", padx=2)
         _tbtn(toolbar_wrap, "\u274c Reject",             self.reject_selected,        "#991b1b", "#b91c1c").pack(side="left", padx=2)
-        _tbtn(toolbar_wrap, "\u23f3 Partial Approved",      self.hold_selected,          "#9a3412", "#c2410c").pack(side="left", padx=2)
+        _tbtn(toolbar_wrap, "\u23f3 Partial Approved",   self.hold_selected,          "#9a3412", "#c2410c").pack(side="left", padx=2)
+        _sep(toolbar_wrap)
+        _tbtn(toolbar_wrap, "\U0001f512 Verify & Close", self.verify_selected,        "#065f46", "#047857").pack(side="left", padx=2)
+        _tbtn(toolbar_wrap, "\u21a9 Reopen",             self.reopen_selected,        "#7c2d12", "#9a3412").pack(side="left", padx=2)
+        _sep(toolbar_wrap)
         _tbtn(toolbar_wrap, "\U0001f5d1 Delete",         self.delete_selected,        "#6b1e1e", "#7f1d1d").pack(side="left", padx=2)
         _sep(toolbar_wrap)
         _tbtn(toolbar_wrap, "\U0001f4ca Export Excel",   self.export_local_excel,     "#3b0764", "#5b21b6").pack(side="left", padx=2)
@@ -445,6 +450,33 @@ class AdminLocalClient:
             self._filter_btns[value] = btn
         self._highlight_filter_btn("")
 
+        # ── Completion status filter pills ─────────────────────────────────
+        comp_filter_wrap = tk.Frame(main_area, bg=CARD_BG,
+                                    highlightthickness=1, highlightbackground=BORDER)
+        comp_filter_wrap.pack(fill="x", padx=14, pady=(0, 6))
+        tk.Label(comp_filter_wrap, text="COMPLETION", bg=CARD_BG, fg="#94a3b8",
+                 font=("Segoe UI", 8, "bold")).pack(side="left", padx=(12, 6), pady=6)
+
+        self._comp_filter = ""
+        self._comp_filter_btns: dict[str, tk.Button] = {}
+        comp_opts = [
+            ("  All  ",               "",                      "#f1f5f9", "#0B2C5F", "#0B2C5F", "#ffffff"),
+            ("  Pending  ",           "Pending",               "#f1f5f9", "#475569", "#475569", "#ffffff"),
+            ("  Awaiting Compl.  ",   "Awaiting Completion",   "#fffbeb", "#92400e", "#d97706", "#ffffff"),
+            ("  Compl. Submitted  ",  "Completion Submitted",  "#eff6ff", "#1d4ed8", "#2563eb", "#ffffff"),
+            ("  Closed  ",            "Closed",                "#f0fdf4", "#15803d", "#16a34a", "#ffffff"),
+        ]
+        for label, value, nbg, nfg, abg, afg in comp_opts:
+            btn = tk.Button(
+                comp_filter_wrap, text=label, bg=nbg, fg=nfg,
+                font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
+                padx=4, pady=4, bd=0,
+                activebackground=abg, activeforeground=afg,
+                command=lambda v=value: self._apply_comp_filter(v),
+            )
+            btn.pack(side="left", padx=3, pady=4)
+            self._comp_filter_btns[value] = btn
+
         # ── Pages container ───────────────────────────────────────────────
         pages_container = tk.Frame(main_area, bg=MAIN_BG)
         pages_container.pack(fill="both", expand=True, padx=14, pady=(0, 6))
@@ -475,9 +507,9 @@ class AdminLocalClient:
         self._update_nav_active("requests")
 
         cols = (
-            "id", "request_date", "factory_id", "vendor", "item_name",
+            "id", "request_date", "factory_id", "request_type", "purpose",
             "final_amount", "paid_amount", "balance_amount",
-            "requested_by", "approval_status", "payment_status", "updated_at",
+            "requested_by", "approval_status", "payment_status", "completion_status", "updated_at",
         )
 
         # ── Requests page ─────────────────────────────────────────────────
@@ -495,28 +527,30 @@ class AdminLocalClient:
 
         col_hdrs = {
             "id": "ID", "request_date": "Date", "factory_id": "Factory",
-            "vendor": "Vendor", "item_name": "Item Name",
-            "final_amount": "Total (\u20b9)", "paid_amount": "Paid (\u20b9)",
-            "balance_amount": "Balance (\u20b9)",
+            "request_type": "Type", "purpose": "Purpose",
+            "final_amount": "Requested (₹)", "paid_amount": "Paid (₹)",
+            "balance_amount": "Balance (₹)",
             "requested_by": "Requested By",
             "approval_status": "Approval", "payment_status": "Payment",
+            "completion_status": "Completion",
             "updated_at": "Updated At",
         }
         for c in cols:
             self.tree.heading(c, text=col_hdrs.get(c, c))
 
-        self.tree.column("id",              width=60,  anchor="center", minwidth=50)
-        self.tree.column("request_date",    width=100, anchor="center", minwidth=80)
-        self.tree.column("factory_id",      width=70,  anchor="center", minwidth=55)
-        self.tree.column("vendor",          width=140, minwidth=90)
-        self.tree.column("item_name",       width=155, minwidth=100)
+        self.tree.column("id",              width=55,  anchor="center", minwidth=45)
+        self.tree.column("request_date",    width=95,  anchor="center", minwidth=80)
+        self.tree.column("factory_id",      width=65,  anchor="center", minwidth=55)
+        self.tree.column("request_type",    width=90,  minwidth=70)
+        self.tree.column("purpose",         width=160, minwidth=100)
         self.tree.column("final_amount",    width=90,  anchor="e",      minwidth=70)
-        self.tree.column("paid_amount",     width=85,  anchor="e",      minwidth=65)
-        self.tree.column("balance_amount",  width=85,  anchor="e",      minwidth=65)
-        self.tree.column("requested_by",    width=130, minwidth=90)
-        self.tree.column("approval_status", width=110, anchor="center", minwidth=90)
-        self.tree.column("payment_status",  width=100, anchor="center", minwidth=80)
-        self.tree.column("updated_at",      width=155, minwidth=110)
+        self.tree.column("paid_amount",     width=80,  anchor="e",      minwidth=65)
+        self.tree.column("balance_amount",  width=80,  anchor="e",      minwidth=65)
+        self.tree.column("requested_by",    width=115, minwidth=90)
+        self.tree.column("approval_status", width=100, anchor="center", minwidth=80)
+        self.tree.column("payment_status",  width=95,  anchor="center", minwidth=75)
+        self.tree.column("completion_status", width=130, anchor="center", minwidth=100)
+        self.tree.column("updated_at",      width=140, minwidth=100)
 
         vs = ttk.Scrollbar(tree_card, orient="vertical",   command=self.tree.yview)
         hs = ttk.Scrollbar(tree_card, orient="horizontal", command=self.tree.xview)
@@ -524,6 +558,7 @@ class AdminLocalClient:
         vs.pack(side="right", fill="y")
         hs.pack(side="bottom", fill="x")
         self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<Double-1>", self._on_tree_double_click)
 
         # ── Bills page ────────────────────────────────────────────────────
         bill_cols = ("id", "request_date", "factory_id", "vendor",
@@ -784,14 +819,21 @@ class AdminLocalClient:
                     approval_status = "Partial Approved"
                 if self._status_filter and approval_status != self._status_filter:
                     continue
+                comp_filter = getattr(self, "_comp_filter", "")
+                comp_status = (it.get("completion_status") or "Pending")
+                if comp_filter and comp_status != comp_filter:
+                    continue
                 req_row_values = (req_id, it.get("request_date"), it.get("factory_id"),
-                                  it.get("vendor"), it.get("item_name"),
+                                  it.get("request_type") or it.get("item_category") or "",
+                                  it.get("purpose") or it.get("item_name") or "",
                                   f"{float(it.get('final_amount') or 0):.2f}",
                                   f"{float(it.get('total_paid') or 0):.2f}",
                                   f"{float(it.get('balance_amount') or 0):.2f}",
                                   it.get("requested_by"),
                                   approval_status,
-                                  it.get("payment_status"), it.get("updated_at"))
+                                  it.get("payment_status"),
+                                  it.get("completion_status") or "Pending",
+                                  it.get("updated_at"))
                 if is_new and not first_new_request_added:
                     row_tag = "new_request"
                 else:
@@ -832,6 +874,14 @@ class AdminLocalClient:
     def _apply_status_filter(self, status: str) -> None:
         self._status_filter = status
         self._highlight_filter_btn(status)
+        self._populate_from_server_items(self._last_server_items)
+
+    def _apply_comp_filter(self, value: str) -> None:
+        self._comp_filter = value
+        for v, btn in self._comp_filter_btns.items():
+            btn.config(relief="flat", bd=0)
+        if value in self._comp_filter_btns:
+            self._comp_filter_btns[value].config(relief="sunken", bd=1)
         self._populate_from_server_items(self._last_server_items)
 
     def _highlight_filter_btn(self, active: str) -> None:
@@ -1066,22 +1116,258 @@ class AdminLocalClient:
         req_id = self.selected_request_id()
         if req_id is None:
             return
-        self.open_approve_dialog(req_id)
+        self.open_partial_approve_dialog(req_id)
+
+    def _on_tree_double_click(self, event) -> None:
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+        values = self.tree.item(item, "values")
+        if not values:
+            return
+        try:
+            req_id = int(values[0])
+        except (ValueError, IndexError):
+            return
+        self.open_request_detail_window(req_id)
+
+    def open_request_detail_window(self, req_id: int) -> None:
+        import threading
+
+        # Find the cached item for this request
+        item_data = {}
+        if hasattr(self, "_last_server_items"):
+            for it in self._last_server_items:
+                if int(it.get("id", -1)) == req_id:
+                    item_data = it
+                    break
+
+        win = tk.Toplevel(self.root)
+        win.title(f"Request #{req_id} — Full Summary")
+        win.geometry("1050x650")
+        win.resizable(True, True)
+        win.transient(self.root)
+
+        # ── Two-pane layout ──────────────────────────────────────────────
+        pane = tk.PanedWindow(win, orient="horizontal", sashwidth=6,
+                              bg="#d1d5db", sashrelief="flat")
+        pane.pack(fill="both", expand=True)
+
+        # ── LEFT: summary ────────────────────────────────────────────────
+        left = tk.Frame(pane, bg="#f8fafc")
+        pane.add(left, minsize=320)
+
+        tk.Label(left, text=f"Request #{req_id}", bg="#0B2C5F", fg="white",
+                 font=("Segoe UI", 13, "bold"), pady=10).pack(fill="x")
+
+        scroll_canvas = tk.Canvas(left, bg="#f8fafc", highlightthickness=0)
+        scroll_canvas.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(left, orient="vertical", command=scroll_canvas.yview)
+        sb.pack(side="right", fill="y")
+        scroll_canvas.configure(yscrollcommand=sb.set)
+
+        inner = tk.Frame(scroll_canvas, bg="#f8fafc")
+        win_id = scroll_canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_configure(e):
+            scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
+        def _on_canvas_resize(e):
+            scroll_canvas.itemconfig(win_id, width=e.width)
+        inner.bind("<Configure>", _on_inner_configure)
+        scroll_canvas.bind("<Configure>", _on_canvas_resize)
+
+        def _field(label: str, value) -> None:
+            row = tk.Frame(inner, bg="#f8fafc")
+            row.pack(fill="x", padx=14, pady=3)
+            tk.Label(row, text=label, bg="#f8fafc", fg="#64748b",
+                     font=("Segoe UI", 9), width=22, anchor="w").pack(side="left")
+            tk.Label(row, text=str(value) if value not in (None, "", "None") else "—",
+                     bg="#f8fafc", fg="#0f172a", font=("Segoe UI", 9, "bold"),
+                     wraplength=280, justify="left", anchor="w").pack(side="left", fill="x", expand=True)
+
+        def _section(title: str) -> None:
+            tk.Label(inner, text=title, bg="#e2e8f0", fg="#0B2C5F",
+                     font=("Segoe UI", 9, "bold"), anchor="w", padx=14, pady=4
+                     ).pack(fill="x", pady=(10, 2))
+
+        _section("Basic Info")
+        _field("Request ID",        item_data.get("id"))
+        _field("Date",              item_data.get("request_date"))
+        _field("Factory",           item_data.get("factory_id"))
+        _field("Requested By",      item_data.get("requested_by"))
+        _field("Vendor",            item_data.get("vendor"))
+        _field("Urgent",            "Yes" if item_data.get("urgent_flag") else "No")
+
+        _section("Item Details")
+        _field("Category",          item_data.get("item_category"))
+        _field("Item Name",         item_data.get("item_name"))
+        _field("Qty",               item_data.get("qty"))
+        _field("Unit",              item_data.get("unit"))
+        _field("Rate (₹)",          item_data.get("rate"))
+        _field("GST %",             item_data.get("gst_percent"))
+        _field("Amount (₹)",        item_data.get("amount"))
+        _field("Total Amount (₹)",  item_data.get("final_amount"))
+        _field("Reason",            item_data.get("reason"))
+
+        _section("Approval & Payment")
+        _field("Approval Status",   item_data.get("approval_status"))
+        _field("Approved Amount (₹)", item_data.get("approved_amount"))
+        _field("Approved By",       item_data.get("approved_by"))
+        _field("Approved At",       item_data.get("approved_at"))
+        _field("Approval Remark",   item_data.get("approval_remark"))
+        _field("Priority",          item_data.get("priority"))
+        _field("Exp. Payment Date", item_data.get("expected_payment_date"))
+        _field("Payment Status",    item_data.get("payment_status"))
+        _field("Total Paid (₹)",    item_data.get("total_paid"))
+        _field("Balance (₹)",       item_data.get("balance_amount"))
+
+        _section("Location")
+        _field("Latitude",          item_data.get("geo_latitude"))
+        _field("Longitude",         item_data.get("geo_longitude"))
+        _field("Accuracy (m)",      item_data.get("geo_accuracy_m"))
+        _field("In Factory",        "Yes" if item_data.get("is_in_factory") else "No")
+        _field("Distance (m)",      item_data.get("distance_from_factory_m"))
+
+        _section("Timestamps")
+        _field("Created At",        item_data.get("created_at"))
+        _field("Updated At",        item_data.get("updated_at"))
+
+        _section("Request Workflow")
+        _field("Request Type",      item_data.get("request_type"))
+        _field("Purpose",           item_data.get("purpose"))
+        _field("Completion Status", item_data.get("completion_status"))
+        _field("Completion Remark", item_data.get("completion_remark"))
+        _field("Vehicle Number",    item_data.get("completion_vehicle_number"))
+        _field("Transporter",       item_data.get("completion_transporter_name"))
+        _field("Submitted At",      item_data.get("completion_submitted_at"))
+        _field("Verified By",       item_data.get("verified_by"))
+        _field("Verified At",       item_data.get("verified_at"))
+        _field("Closing Remark",    item_data.get("verified_remark"))
+
+        # ── RIGHT: bill preview ──────────────────────────────────────────
+        right = tk.Frame(pane, bg="#1e293b")
+        pane.add(right, minsize=350)
+
+        header = tk.Frame(right, bg="#0B2C5F")
+        header.pack(fill="x")
+        tk.Label(header, text="Bill Preview", bg="#0B2C5F", fg="white",
+                 font=("Segoe UI", 11, "bold"), pady=8, padx=14).pack(side="left")
+
+        bill_status_var = tk.StringVar(value="Loading bill…")
+        tk.Label(header, textvariable=bill_status_var, bg="#0B2C5F", fg="#93c5fd",
+                 font=("Segoe UI", 9)).pack(side="right", padx=14)
+
+        # PDF nav bar (hidden until PDF loaded)
+        nav_bar = tk.Frame(right, bg="#1e293b")
+        nav_bar.pack(fill="x")
+        _pdf_pages_d: list = []
+        _pdf_idx_d: list = [0]
+        page_label_var = tk.StringVar(value="")
+        tk.Label(nav_bar, textvariable=page_label_var, bg="#1e293b", fg="#cbd5e1",
+                 font=("Segoe UI", 9)).pack(side="left", padx=10)
+
+        canvas = tk.Canvas(right, bg="#1e293b", highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+        _photo_holder: list = [None]
+
+        def _draw_pil(img) -> None:
+            cw = max(canvas.winfo_width() - 10, 300)
+            ch = max(canvas.winfo_height() - 10, 300)
+            img2 = img.copy()
+            img2.thumbnail((cw, ch))
+            ph = ImageTk.PhotoImage(img2)
+            _photo_holder[0] = ph
+            canvas.delete("all")
+            canvas.create_image(5, 5, anchor="nw", image=ph)
+            canvas.configure(scrollregion=(0, 0, ph.width() + 10, ph.height() + 10))
+
+        def _show_pdf_page_d(idx: int) -> None:
+            if not _pdf_pages_d:
+                return
+            idx = max(0, min(idx, len(_pdf_pages_d) - 1))
+            _pdf_idx_d[0] = idx
+            page_label_var.set(f"Page {idx + 1} / {len(_pdf_pages_d)}")
+            _draw_pil(_pdf_pages_d[idx])
+
+        def _prev_d():
+            _show_pdf_page_d(_pdf_idx_d[0] - 1)
+
+        def _next_d():
+            _show_pdf_page_d(_pdf_idx_d[0] + 1)
+
+        tk.Button(nav_bar, text="◀", command=_prev_d, bg="#334155", fg="white",
+                  relief="flat", padx=8, font=("Segoe UI", 10)).pack(side="left")
+        tk.Button(nav_bar, text="▶", command=_next_d, bg="#334155", fg="white",
+                  relief="flat", padx=8, font=("Segoe UI", 10)).pack(side="left", padx=(2, 0))
+
+        def _msg(text: str) -> None:
+            canvas.delete("all")
+            canvas.create_text(14, 14, anchor="nw", text=text, fill="#94a3b8",
+                               font=("Segoe UI", 10), width=350)
+
+        def _load_bill() -> None:
+            resp, filename, err = self._fetch_bill_response(req_id, stream=False)
+            if err or resp is None:
+                win.after(0, lambda: bill_status_var.set(err or "No bill attached"))
+                win.after(0, lambda: _msg("No bill attached or failed to load."))
+                return
+
+            content = resp.content
+            ctype = resp.headers.get("Content-Type", "")
+            win.after(0, lambda: bill_status_var.set(filename))
+
+            lower = filename.lower()
+            if lower.endswith(".pdf") or "application/pdf" in ctype:
+                if fitz is None:
+                    win.after(0, lambda: _msg("PDF preview unavailable (PyMuPDF not installed)."))
+                    return
+                try:
+                    doc = fitz.open(stream=content, filetype="pdf")
+                    pages = []
+                    for i in range(doc.page_count):
+                        pix = doc[i].get_pixmap(matrix=fitz.Matrix(2, 2))
+                        img = Image.open(io.BytesIO(pix.tobytes("ppm")))
+                        img.load()
+                        pages.append(img)
+                    doc.close()
+                    _pdf_pages_d.extend(pages)
+                    win.after(0, lambda: _show_pdf_page_d(0))
+                except Exception as exc:
+                    win.after(0, lambda: _msg(f"PDF render error: {exc}"))
+            else:
+                try:
+                    img = Image.open(io.BytesIO(content))
+                    win.after(0, lambda: _draw_pil(img))
+                except Exception:
+                    win.after(0, lambda: _msg("Cannot preview this file type."))
+
+        def _on_canvas_resize_bill(e):
+            if _pdf_pages_d:
+                _show_pdf_page_d(_pdf_idx_d[0])
+            elif _photo_holder[0]:
+                pass  # static image already drawn
+
+        canvas.bind("<Configure>", _on_canvas_resize_bill)
+        threading.Thread(target=_load_bill, daemon=True).start()
 
     def open_approve_dialog(self, req_id: int) -> None:
         dialog = tk.Toplevel(self.root)
         dialog.title("Approve Request")
-        dialog.geometry("460x390")
+        dialog.geometry("460x450")
         dialog.resizable(False, False)
         dialog.transient(self.root)
         dialog.grab_set()
 
         amount_var = tk.StringVar()
         priority_var = tk.StringVar(value="Medium")
+        mode_var = tk.StringVar(value="Cash")
         expected_var = tk.StringVar()
 
         ttk.Label(dialog, text="Approved Amount", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(14, 4))
         ttk.Entry(dialog, textvariable=amount_var).pack(fill="x", padx=14)
+
+        ttk.Label(dialog, text="Payment Mode", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(12, 4))
+        ttk.Combobox(dialog, textvariable=mode_var, values=["Cash", "UPI", "Bank Transfer", "Cheque"], state="readonly").pack(fill="x", padx=14)
 
         ttk.Label(dialog, text="Priority", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(12, 4))
         ttk.Combobox(dialog, textvariable=priority_var, values=["High", "Medium", "Low"], state="readonly").pack(fill="x", padx=14)
@@ -1124,6 +1410,7 @@ class AdminLocalClient:
 
             payload = {
                 "approved_amount": amount,
+                "payment_mode": mode_var.get().strip() or "Cash",
                 "remarks": remarks_box.get("1.0", "end").strip(),
                 "priority": priority_var.get().strip() or "Medium",
             }
@@ -1169,8 +1456,8 @@ class AdminLocalClient:
 
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Partial Payment — Request #{req_id}")
-        dialog.geometry("560x620")
-        dialog.resizable(False, False)
+        dialog.geometry("560x720")
+        dialog.resizable(False, True)
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -1324,6 +1611,56 @@ class AdminLocalClient:
         submit_btn.pack(side="right")
 
         amount_entry.focus_set()
+        dialog.wait_window()
+
+    def verify_selected(self) -> None:
+        req_id = self.selected_request_id()
+        if req_id is None:
+            return
+        self.open_verify_dialog(req_id)
+
+    def reopen_selected(self) -> None:
+        req_id = self.selected_request_id()
+        if req_id is None:
+            return
+        if not messagebox.askyesno("Reopen", f"Reopen completion for request #{req_id}?\n"
+                                   "The factory user will need to resubmit completion."):
+            return
+        success, message = self._perform_action(f"/requests/{req_id}/reopen", {})
+        if success:
+            self.sync_from_server(silent=True)
+            messagebox.showinfo("Reopen", message)
+        else:
+            messagebox.showerror("Reopen", message)
+
+    def open_verify_dialog(self, req_id: int) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Verify & Close — Request #{req_id}")
+        dialog.geometry("460x280")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        ttk.Label(dialog, text="Closing Remarks (optional)", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(14, 4))
+        remarks_box = tk.Text(dialog, height=6)
+        remarks_box.pack(fill="both", expand=True, padx=14)
+        status_var = tk.StringVar(value="")
+        status_label = ttk.Label(dialog, textvariable=status_var, wraplength=420, justify="left")
+        status_label.pack(fill="x", padx=14, pady=(8, 0))
+        def on_submit():
+            closing_remarks = remarks_box.get("1.0", "end").strip()
+            payload = {}
+            if closing_remarks:
+                payload["closing_remarks"] = closing_remarks
+            success, message = self._perform_action(f"/requests/{req_id}/verify", payload)
+            status_var.set(message)
+            status_label.configure(foreground="#1f8a43" if success else "#b02a37")
+            if success:
+                self.sync_from_server(silent=True)
+                self.root.after(900, dialog.destroy)
+        btn_row = ttk.Frame(dialog)
+        btn_row.pack(fill="x", padx=14, pady=14)
+        ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(btn_row, text="Verify & Close", command=on_submit).pack(side="right")
         dialog.wait_window()
 
     def _expected_delete_password(self) -> str:

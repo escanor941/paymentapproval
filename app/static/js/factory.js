@@ -1,18 +1,18 @@
-const requestForm = document.getElementById('requestForm');
+// ============================================================
+// Factory Panel — v2 (simplified request workflow)
+// ============================================================
+
+const factoryRequestForm = document.getElementById('factoryRequestForm');
 const ownTableBody = document.querySelector('#ownTable tbody');
-const qtyInput = document.getElementById('qty');
-const rateInput = document.getElementById('rate');
-const gstInput = document.getElementById('gst');
-const amountInput = document.getElementById('amount');
-const finalAmountInput = document.getElementById('final_amount');
+const awaitingTableBody = document.querySelector('#awaitingTable tbody');
+const awaitingSection = document.getElementById('awaitingSection');
 const flashBox = document.getElementById('factoryFlash');
-const simpleBillForm = document.getElementById('simpleBillForm');
-const simpleBillFlashBox = document.getElementById('simpleBillFlash');
-let editRequestId = null;
+
 let geoWarned = false;
 
-// ---- Factory status-change notification system ----
+// ---- Status-change notification system ----
 let factoryStatusMap = {};
+let factoryCompletionMap = {};
 let factoryNotifInitialized = false;
 
 function initFactoryNotifications() {
@@ -73,9 +73,7 @@ function showOverlayNotif(title, message, type) {
 }
 
 function showStrongNotification(title, message, type) {
-  if (navigator.vibrate) {
-    navigator.vibrate([200, 100, 300, 100, 400]);
-  }
+  if (navigator.vibrate) navigator.vibrate([200, 100, 300, 100, 400]);
   playNotifSound();
   if ('Notification' in window && Notification.permission === 'granted') {
     try { new Notification(title, { body: message }); } catch (e) {}
@@ -86,35 +84,50 @@ function showStrongNotification(title, message, type) {
 
 function checkStatusChanges(items) {
   if (!factoryNotifInitialized) {
-    items.forEach(item => { factoryStatusMap[item.id] = item.approval_status; });
+    items.forEach(item => {
+      factoryStatusMap[item.id] = item.approval_status;
+      factoryCompletionMap[item.id] = item.completion_status;
+    });
     factoryNotifInitialized = true;
     return;
   }
   items.forEach(item => {
-    const prev = factoryStatusMap[item.id];
-    if (prev !== undefined && prev !== item.approval_status) {
+    const prevApproval = factoryStatusMap[item.id];
+    if (prevApproval !== undefined && prevApproval !== item.approval_status) {
       let title, message, type;
       if (item.approval_status === 'Approved') {
         title = 'Request Approved!';
-        message = `"${item.item_name}" has been APPROVED.`;
+        message = `Request #${item.id} has been APPROVED.`;
         type = 'success';
       } else if (item.approval_status === 'Rejected') {
         const reason = item.approval_remark ? ` Reason: ${item.approval_remark}` : '';
         title = 'Request Rejected';
-        message = `"${item.item_name}" was rejected.${reason}`;
+        message = `Request #${item.id} was rejected.${reason}`;
         type = 'danger';
-      } else if (item.approval_status === 'Hold') {
-        title = 'Request On Hold';
-        message = `"${item.item_name}" has been put on hold.`;
+      } else if (item.approval_status === 'Partial Approved') {
+        title = 'Partially Approved';
+        message = `Request #${item.id} has been partially approved.`;
         type = 'warning';
       } else {
         title = 'Request Updated';
-        message = `"${item.item_name}" status changed to ${item.approval_status}.`;
+        message = `Request #${item.id} status changed to ${item.approval_status}.`;
         type = 'info';
       }
       showStrongNotification(title, message, type);
     }
     factoryStatusMap[item.id] = item.approval_status;
+
+    const prevCompletion = factoryCompletionMap[item.id];
+    if (prevCompletion !== undefined && prevCompletion !== item.completion_status) {
+      if (item.completion_status === 'Awaiting Completion') {
+        showStrongNotification(
+          'Action Required: Submit Completion',
+          `Request #${item.id} has been fully paid. Please submit completion details.`,
+          'warning'
+        );
+      }
+    }
+    factoryCompletionMap[item.id] = item.completion_status;
   });
 }
 
@@ -126,16 +139,11 @@ function showToast(message, type = 'success') {
     container.className = 'factory-toast-container';
     document.body.appendChild(container);
   }
-
   const toast = document.createElement('div');
   toast.className = `factory-toast factory-toast-${type}`;
   toast.textContent = message;
   container.appendChild(toast);
-
-  requestAnimationFrame(() => {
-    toast.classList.add('show');
-  });
-
+  requestAnimationFrame(() => toast.classList.add('show'));
   setTimeout(() => {
     toast.classList.remove('show');
     setTimeout(() => toast.remove(), 220);
@@ -145,43 +153,23 @@ function showToast(message, type = 'success') {
 function showFlash(message, type = 'success') {
   if (!flashBox) return;
   flashBox.innerHTML = `<div class="alert alert-${type} py-2 mb-0">${message}</div>`;
-  setTimeout(() => {
-    flashBox.innerHTML = '';
-  }, 3000);
+  setTimeout(() => { flashBox.innerHTML = ''; }, 4000);
 }
 
-function showSimpleFlash(message, type = 'success') {
-  if (!simpleBillFlashBox) return;
-  simpleBillFlashBox.innerHTML = `<div class="alert alert-${type} py-2 mb-0">${message}</div>`;
-  setTimeout(() => {
-    simpleBillFlashBox.innerHTML = '';
-  }, 3000);
+function showCompletionFlash(message, type = 'success') {
+  const box = document.getElementById('completionFlash');
+  if (!box) return;
+  box.innerHTML = `<div class="alert alert-${type} py-2 mb-0">${message}</div>`;
 }
 
-function getSelectedFactoryId() {
-  return requestForm?.querySelector('[name="factory_id"]')?.value || '';
-}
-
+// ---- Geolocation helpers ----
 function getCurrentLocation(timeoutMs = 8000) {
   return new Promise((resolve) => {
-    if (!navigator.geolocation) {
-      resolve(null);
-      return;
-    }
+    if (!navigator.geolocation) { resolve(null); return; }
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        resolve({
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-        });
-      },
+      (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: pos.coords.accuracy }),
       () => resolve(null),
-      {
-        enableHighAccuracy: true,
-        timeout: timeoutMs,
-        maximumAge: 30 * 1000,
-      }
+      { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 30000 }
     );
   });
 }
@@ -203,227 +191,149 @@ async function attachLocationToFormData(formData) {
 async function sendPresencePing() {
   const loc = await getCurrentLocation(7000);
   if (!loc) return;
-
   const fd = new FormData();
   fd.set('latitude', String(loc.latitude));
   fd.set('longitude', String(loc.longitude));
   fd.set('accuracy_m', String(loc.accuracy || 0));
-  const fid = getSelectedFactoryId();
+  const fid = factoryRequestForm?.querySelector('[name="factory_id"]')?.value || '';
   if (fid) fd.set('factory_id', fid);
-
-  try {
-    await fetch('/presence/ping', { method: 'POST', body: fd });
-  } catch (_) {
-    // Ignore transient network/location issues.
-  }
+  try { await fetch('/presence/ping', { method: 'POST', body: fd }); } catch (_) {}
 }
 
-function calcAmounts() {
-  const qty = parseFloat(qtyInput?.value || 0);
-  const rate = parseFloat(rateInput?.value || 0);
-  const gst = parseFloat(gstInput?.value || 0);
-  const amount = qty * rate;
-  const finalAmount = amount + (amount * gst / 100);
-  if (amountInput) amountInput.value = amount.toFixed(2);
-  if (finalAmountInput) finalAmountInput.value = finalAmount.toFixed(2);
-}
-
-[qtyInput, rateInput, gstInput].forEach(el => el?.addEventListener('input', calcAmounts));
-
-if (requestForm) {
-  const date = new Date().toISOString().slice(0, 10);
-  requestForm.querySelector('[name="request_date"]').value = date;
-
-  requestForm.addEventListener('submit', async (e) => {
+// ---- Create Request ----
+if (factoryRequestForm) {
+  factoryRequestForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    await submitRequest(false);
+    await submitFactoryRequest();
   });
 }
 
-if (simpleBillForm) {
-  simpleBillForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    await submitSimpleBill();
-  });
-}
+async function submitFactoryRequest() {
+  if (!factoryRequestForm) return;
+  const formData = new FormData(factoryRequestForm);
+  const submitBtn = document.getElementById('factorySubmitBtn');
+  const defaultText = submitBtn?.textContent || 'Submit Request';
 
-async function submitRequest(saveAsDraft) {
-  if (!requestForm) return;
-  const formData = new FormData(requestForm);
-  const submitBtn = requestForm.querySelector('button[type="submit"]');
-  const draftBtn = requestForm.querySelector('button[onclick="saveDraft()"]');
-  const resetBtn = requestForm.querySelector('button[type="reset"]');
-  const defaultSubmitText = submitBtn?.textContent || 'Submit Request';
-  const defaultDraftText = draftBtn?.textContent || 'Save Draft';
+  const requestType = (formData.get('request_type') || '').trim();
+  const purpose = (formData.get('purpose') || '').trim();
+  const amount = parseFloat(formData.get('amount') || '0');
 
-  // Bill image is mandatory for final submissions (not drafts)
-  if (!saveAsDraft) {
-    const billFile = formData.get('bill_image');
-    if (!billFile || billFile.size === 0) {
-      showFlash('Upload Bill / Quotation Image is required before submitting.', 'danger');
-      document.querySelector('[name="bill_image"]')?.focus();
-      return;
-    }
-  }
+  if (!requestType) { showFlash('Please select a Request Type.', 'danger'); return; }
+  if (!purpose) { showFlash('Purpose is required.', 'danger'); return; }
+  if (!amount || amount <= 0) { showFlash('Amount must be greater than zero.', 'danger'); return; }
 
-  formData.set('save_as_draft', saveAsDraft ? 'true' : 'false');
-  if (formData.get('urgent_flag') === 'true') {
-    formData.set('urgent_flag', 'true');
-  } else {
-    formData.set('urgent_flag', 'false');
-  }
   await attachLocationToFormData(formData);
 
-  const url = editRequestId ? `/requests/${editRequestId}` : '/requests';
-  const method = editRequestId ? 'PUT' : 'POST';
-  const startTime = performance.now();
-
-  if (submitBtn) {
-    submitBtn.disabled = true;
-    submitBtn.textContent = saveAsDraft ? 'Saving...' : 'Submitting...';
-  }
-  if (draftBtn) {
-    draftBtn.disabled = true;
-    if (saveAsDraft) draftBtn.textContent = 'Saving...';
-  }
-  if (resetBtn) resetBtn.disabled = true;
-
-  showFlash(saveAsDraft ? 'Saving draft...' : 'Uploading bill and submitting request, please wait...', 'info');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Submitting…'; }
+  showFlash('Submitting request, please wait…', 'info');
 
   try {
-    const res = await fetch(url, { method, body: formData });
+    const res = await fetch('/requests/factory', { method: 'POST', body: formData });
     const data = await res.json();
     if (!res.ok) {
-      showFlash(data.detail || data.message || 'Failed to save request', 'danger');
-      showToast(data.detail || data.message || 'Failed to save request', 'danger');
+      showFlash(data.detail || data.message || 'Failed to submit request', 'danger');
+      showToast(data.detail || 'Submission failed', 'danger');
       return;
     }
-
-    showFlash(data.message || 'Request saved', 'success');
-    const seconds = ((performance.now() - startTime) / 1000).toFixed(1);
-    showToast(`${data.message || 'Request saved'} (${seconds}s)`, 'success');
-  } catch (err) {
-    showFlash('Network error while saving request', 'danger');
-    showToast('Network error while saving request', 'danger');
-    return;
-  } finally {
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.textContent = defaultSubmitText;
-    }
-    if (draftBtn) {
-      draftBtn.disabled = false;
-      draftBtn.textContent = defaultDraftText;
-    }
-    if (resetBtn) resetBtn.disabled = false;
-  }
-
-  editRequestId = null;
-  requestForm.reset();
-  requestForm.querySelector('[name="request_date"]').value = new Date().toISOString().slice(0, 10);
-  calcAmounts();
-  loadOwnRequests();
-}
-
-async function saveDraft() {
-  await submitRequest(true);
-}
-window.saveDraft = saveDraft;
-
-async function submitSimpleBill() {
-  if (!simpleBillForm) return;
-  const fd = new FormData(simpleBillForm);
-  const submitBtn = simpleBillForm.querySelector('button[type="submit"]');
-  const resetBtn = simpleBillForm.querySelector('button[type="reset"]');
-  const defaultSubmitText = submitBtn?.textContent || 'Upload Bill';
-  const startTime = performance.now();
-  const billFile = fd.get('bill_image');
-  const vendorName = (fd.get('vendor_name') || '').toString().trim();
-  const fid = getSelectedFactoryId();
-  if (fid) fd.set('factory_id', fid);
-  if (!vendorName) {
-    showSimpleFlash('Vendor name is required.', 'danger');
-    return;
-  }
-  if (!billFile || billFile.size === 0) {
-    showSimpleFlash('Actual bill image is required.', 'danger');
-    return;
-  }
-
-  await attachLocationToFormData(fd);
-
-  if (submitBtn) {
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Uploading...';
-  }
-  if (resetBtn) resetBtn.disabled = true;
-  showSimpleFlash('Uploading bill, please wait...', 'info');
-
-  try {
-    const res = await fetch('/requests/simple-bill', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (!res.ok) {
-      showSimpleFlash(data.detail || 'Failed to upload bill', 'danger');
-      showToast(data.detail || 'Failed to upload bill', 'danger');
-      return;
-    }
-    showSimpleFlash(data.message || 'Bill uploaded', 'success');
-    const seconds = ((performance.now() - startTime) / 1000).toFixed(1);
-    showToast(`${data.message || 'Bill uploaded'} (${seconds}s)`, 'success');
-    simpleBillForm.reset();
+    showFlash(data.message || 'Request submitted successfully!', 'success');
+    showToast(data.message || 'Request submitted!', 'success');
+    factoryRequestForm.reset();
+    // Switch to My Requests tab
+    const myReqTab = document.getElementById('myreq-tab');
+    if (myReqTab) myReqTab.click();
     loadOwnRequests();
   } catch (err) {
-    showSimpleFlash('Network error while uploading bill', 'danger');
-    showToast('Network error while uploading bill', 'danger');
+    showFlash('Network error while submitting request.', 'danger');
+    showToast('Network error', 'danger');
   } finally {
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.textContent = defaultSubmitText;
-    }
-    if (resetBtn) resetBtn.disabled = false;
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = defaultText; }
   }
 }
 
-function badge(status) {
-  if (status === 'Pending') return '<span class="badge badge-pending">Pending</span>';
-  if (status === 'Approved') return '<span class="badge badge-approved">Approved</span>';
-  if (status === 'Rejected') return '<span class="badge badge-rejected">Rejected</span>';
-  if (status === 'Paid') return '<span class="badge badge-paid">Paid</span>';
-  return `<span class="badge text-bg-secondary">${status}</span>`;
+// ---- Badges ----
+function approvalBadge(status) {
+  const map = {
+    'Pending': 'badge-pending',
+    'Approved': 'badge-approved',
+    'Rejected': 'badge-rejected',
+    'Partial Approved': 'badge-warning text-dark',
+  };
+  const cls = map[status] || 'text-bg-secondary';
+  return `<span class="badge ${cls}">${status}</span>`;
 }
 
+function paymentBadge(status) {
+  const map = { 'Unpaid': 'text-bg-secondary', 'Partially Paid': 'badge-warning text-dark', 'Paid': 'badge-paid' };
+  const cls = map[status] || 'text-bg-secondary';
+  return `<span class="badge ${cls}">${status}</span>`;
+}
+
+function completionBadge(status) {
+  if (status === 'Awaiting Completion') return `<span class="badge bg-warning text-dark">${status}</span>`;
+  if (status === 'Completion Submitted') return `<span class="badge bg-success">${status}</span>`;
+  return `<span class="badge text-bg-secondary">${status || 'Pending'}</span>`;
+}
+
+// ---- Load Requests ----
 async function loadOwnRequests() {
   if (!ownTableBody) return;
   const params = new URLSearchParams();
   const d = document.getElementById('fsDate')?.value;
-  const v = document.getElementById('fsVendor')?.value;
   const s = document.getElementById('fsStatus')?.value;
-  if (d) {
-    params.set('from_date', d);
-    params.set('to_date', d);
-  }
-  if (v) params.set('vendor', v);
+  const c = document.getElementById('fsCompletion')?.value;
+  if (d) { params.set('from_date', d); params.set('to_date', d); }
   if (s) params.set('status', s);
 
   const res = await fetch(`/requests?${params.toString()}`);
   const data = await res.json();
   checkStatusChanges(data.items);
-  ownTableBody.innerHTML = '';
 
-  data.items.filter(item => item.approval_status !== 'Approved').forEach(item => {
+  let filtered = data.items;
+  if (c) filtered = filtered.filter(item => (item.completion_status || 'Pending') === c);
+
+  // ---- Awaiting Completion section ----
+  const awaiting = data.items.filter(item => (item.completion_status || 'Pending') === 'Awaiting Completion');
+  if (awaitingSection) awaitingSection.style.display = awaiting.length ? '' : 'none';
+  if (awaitingTableBody) {
+    awaitingTableBody.innerHTML = '';
+    awaiting.forEach(item => {
+      const tr = document.createElement('tr');
+      tr.className = 'table-warning';
+      tr.innerHTML = `
+        <td>#${item.id}</td>
+        <td>${item.request_date}</td>
+        <td>${item.request_type || item.item_category || ''}</td>
+        <td>${escHtml(item.purpose || item.reason || '')}</td>
+        <td>₹${fmtAmt(item.final_amount)}</td>
+        <td><button class="btn btn-sm btn-success" onclick="openCompletionModal(${item.id}, '${escHtml(item.request_type || item.item_category || '')}')">Submit Completion</button></td>
+      `;
+      awaitingTableBody.appendChild(tr);
+    });
+  }
+
+  // ---- Main table ----
+  ownTableBody.innerHTML = '';
+  filtered.forEach(item => {
+    const completionSt = item.completion_status || 'Pending';
+    const canEdit = ['Pending', 'Draft'].includes(item.approval_status);
+    const canDelete = ['Pending', 'Draft'].includes(item.approval_status);
+    const canComplete = completionSt === 'Awaiting Completion';
+
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td data-label="ID">${item.id}</td>
+      <td data-label="Req No">#${item.id}</td>
       <td data-label="Date">${item.request_date}</td>
-      <td data-label="Vendor">${item.vendor || ''}</td>
-      <td data-label="Item">${item.item_name}</td>
-      <td data-label="Amount">${item.final_amount.toFixed ? item.final_amount.toFixed(2) : item.final_amount}</td>
-      <td data-label="Approval">${badge(item.approval_status)}</td>
-      <td data-label="Payment">${badge(item.payment_status)}</td>
+      <td data-label="Type">${item.request_type || item.item_category || ''}</td>
+      <td data-label="Purpose">${escHtml(item.purpose || item.reason || '')}</td>
+      <td data-label="Amount">₹${fmtAmt(item.final_amount)}</td>
+      <td data-label="Approval">${approvalBadge(item.approval_status)}</td>
+      <td data-label="Payment">${paymentBadge(item.payment_status)}</td>
+      <td data-label="Completion">${completionBadge(completionSt)}</td>
       <td data-label="Actions" class="actions-cell">
-        ${['Pending','Draft','Hold'].includes(item.approval_status) ? `<button class="btn btn-sm btn-outline-primary" onclick="editOwn(${item.id})">Edit</button>` : ''}
-        ${['Pending','Draft','Hold'].includes(item.approval_status) ? `<button class="btn btn-sm btn-outline-danger" onclick="deleteOwn(${item.id})">Delete</button>` : ''}
-        ${item.bill_image_path ? `<a class="btn btn-sm btn-outline-secondary" target="_blank" href="${item.bill_image_path}">Bill</a>` : ''}
+        ${canDelete ? `<button class="btn btn-sm btn-outline-danger" onclick="deleteOwn(${item.id})">Delete</button>` : ''}
+        ${canComplete ? `<button class="btn btn-sm btn-success" onclick="openCompletionModal(${item.id}, '${escHtml(item.request_type || item.item_category || '')}')">Complete</button>` : ''}
+        ${item.bill_image_path ? `<a class="btn btn-sm btn-outline-secondary" target="_blank" href="/requests/${item.id}/bill">Bill</a>` : ''}
+        ${item.completion_bill_path ? `<a class="btn btn-sm btn-outline-info" target="_blank" href="${item.completion_bill_path}">Inv</a>` : ''}
       </td>
     `;
     ownTableBody.appendChild(tr);
@@ -431,50 +341,102 @@ async function loadOwnRequests() {
 }
 window.loadOwnRequests = loadOwnRequests;
 
+function fmtAmt(v) {
+  const n = parseFloat(v);
+  return isNaN(n) ? '0.00' : n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function escHtml(str) {
+  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ---- Delete ----
 async function deleteOwn(id) {
   if (!confirm('Delete this request?')) return;
   const res = await fetch(`/requests/${id}`, { method: 'DELETE' });
   const data = await res.json();
-  if (!res.ok) {
-    showFlash(data.detail || 'Unable to delete request', 'danger');
-    return;
-  }
-  showFlash(data.message || 'Deleted', 'success');
+  if (!res.ok) { showToast(data.detail || 'Unable to delete request', 'danger'); return; }
+  showToast(data.message || 'Deleted', 'success');
   loadOwnRequests();
 }
 window.deleteOwn = deleteOwn;
 
-async function editOwn(id) {
-  const res = await fetch('/requests');
-  const data = await res.json();
-  const item = (data.items || []).find(x => x.id === id);
-  if (!item) return;
+// ---- Completion Modal ----
+let completionModalInstance = null;
 
-  editRequestId = id;
-  requestForm.querySelector('[name="request_date"]').value = item.request_date;
-  requestForm.querySelector('[name="factory_id"]').value = item.factory_id;
-  requestForm.querySelector('[name="vendor_id"]').value = item.vendor_id;
-  requestForm.querySelector('[name="vendor_mobile"]').value = item.vendor_mobile || '';
-  requestForm.querySelector('[name="item_category"]').value = item.item_category;
-  requestForm.querySelector('[name="item_name"]').value = item.item_name;
-  requestForm.querySelector('[name="qty"]').value = item.qty;
-  requestForm.querySelector('[name="unit"]').value = item.unit;
-  requestForm.querySelector('[name="rate"]').value = item.rate;
-  requestForm.querySelector('[name="gst_percent"]').value = item.gst_percent || 0;
-  requestForm.querySelector('[name="reason"]').value = item.reason;
-  requestForm.querySelector('[name="urgent_flag"]').value = item.urgent_flag ? 'true' : 'false';
-  requestForm.querySelector('[name="requested_by"]').value = item.requested_by;
-  requestForm.querySelector('[name="notes"]').value = item.notes || '';
-  calcAmounts();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+function openCompletionModal(requestId, requestType) {
+  document.getElementById('completionRequestId').value = requestId;
+  document.getElementById('completionRemark').value = '';
+  document.getElementById('completionFlash').innerHTML = '';
+  document.getElementById('completionForm').reset();
+  document.getElementById('completionRequestId').value = requestId;
+
+  // Show/hide type-specific fields
+  const transportFields = document.getElementById('transportFields');
+  const fileField = document.getElementById('completionFileField');
+  const fileLabel = document.getElementById('completionFileLabel');
+
+  transportFields.style.display = requestType === 'Transport' ? '' : 'none';
+  if (requestType === 'Material') {
+    fileField.style.display = '';
+    fileLabel.textContent = 'Upload Bill (Optional)';
+  } else if (requestType === 'Service') {
+    fileField.style.display = '';
+    fileLabel.textContent = 'Upload Invoice (Optional)';
+  } else {
+    fileField.style.display = 'none';
+  }
+
+  if (!completionModalInstance) {
+    const el = document.getElementById('completionModal');
+    completionModalInstance = new bootstrap.Modal(el);
+  }
+  completionModalInstance.show();
 }
-window.editOwn = editOwn;
+window.openCompletionModal = openCompletionModal;
 
+async function submitCompletion() {
+  const form = document.getElementById('completionForm');
+  const requestId = document.getElementById('completionRequestId').value;
+  const remark = (document.getElementById('completionRemark').value || '').trim();
+
+  if (!remark) {
+    showCompletionFlash('Completion remark is required.', 'danger');
+    return;
+  }
+
+  const formData = new FormData(form);
+  const btn = document.getElementById('completionSubmitBtn');
+  const defaultText = btn?.textContent || 'Submit Completion';
+  if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
+  showCompletionFlash('Submitting…', 'info');
+
+  try {
+    const res = await fetch(`/requests/${requestId}/complete`, { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) {
+      showCompletionFlash(data.detail || 'Failed to submit completion', 'danger');
+      return;
+    }
+    showCompletionFlash(data.message || 'Completion submitted!', 'success');
+    showToast('Completion submitted successfully!', 'success');
+    setTimeout(() => {
+      completionModalInstance?.hide();
+      loadOwnRequests();
+    }, 1200);
+  } catch (err) {
+    showCompletionFlash('Network error while submitting completion.', 'danger');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = defaultText; }
+  }
+}
+window.submitCompletion = submitCompletion;
+
+// ---- Init ----
 initFactoryNotifications();
-calcAmounts();
 loadOwnRequests();
 sendPresencePing();
-setInterval(() => {
-  if (!document.hidden) sendPresencePing();
-}, 60000);
-setInterval(loadOwnRequests, 10000);
+setInterval(() => { if (!document.hidden) sendPresencePing(); }, 60000);
+setInterval(() => { if (!document.hidden) loadOwnRequests(); }, 10000);
+
+

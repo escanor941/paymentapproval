@@ -78,13 +78,18 @@
             <div class="col-md-2"><label class="form-label">From</label><input id="fFrom" type="date" class="form-control"></div>
             <div class="col-md-2"><label class="form-label">To</label><input id="fTo" type="date" class="form-control"></div>
             <div class="col-md-2"><label class="form-label">Factory</label><select id="fFactory" class="form-select"><option value="">All</option>{% for x in factories %}<option value="{{ x.id }}">{{ x.name }}</option>{% endfor %}</select></div>
-            <div class="col-md-2"><label class="form-label">Vendor</label><input id="fVendor" class="form-control" placeholder="Vendor"></div>
-            <div class="col-md-2"><label class="form-label">Status</label><select id="fStatus" class="form-select"><option value="">All</option><option>Draft</option><option>Pending</option><option>Approved</option><option>Rejected</option><option>Partial Approved</option></select></div>
-            <div class="col-md-2"><label class="form-label">Payment</label><select id="fPayment" class="form-select"><option value="">All</option><option>Unpaid</option><option>Partially Paid</option><option>Paid</option><option>Hold</option></select></div>
+            <div class="col-md-2"><label class="form-label">Request Type</label><select id="fType" class="form-select"><option value="">All</option><option>Material</option><option>Labour</option><option>Transport</option><option>Service</option><option>Utility</option><option>Emergency</option></select></div>
+            <div class="col-md-2"><label class="form-label">Approval</label><select id="fStatus" class="form-select"><option value="">All</option><option>Pending</option><option>Approved</option><option>Rejected</option><option>Partial Approved</option></select></div>
+            <div class="col-md-2"><label class="form-label">Payment</label><select id="fPayment" class="form-select"><option value="">All</option><option>Unpaid</option><option>Partially Paid</option><option>Paid</option></select></div>
         </div>
-        <div class="d-flex gap-2 mt-2">
-            <button class="btn btn-primary" onclick="applyRequestFilters()">Apply Filter</button>
-            <button class="btn btn-outline-secondary" onclick="clearFilters()">Reset</button>
+        <div class="row g-2 mt-1 align-items-end">
+            <div class="col-md-3"><label class="form-label">Completion Status</label><select id="fCompletion" class="form-select"><option value="">All</option><option>Pending</option><option>Awaiting Completion</option><option>Completion Submitted</option><option>Closed</option></select></div>
+            <div class="col-md-3 d-flex align-items-end">
+                <div class="d-flex gap-2">
+                    <button class="btn btn-primary" onclick="applyRequestFilters()">Apply Filter</button>
+                    <button class="btn btn-outline-secondary" onclick="clearFilters()">Reset</button>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -122,7 +127,7 @@
                 <table class="table table-sm align-middle" id="reqTable">
                     <thead>
                     <tr>
-                        <th>ID</th><th>Date</th><th>Factory</th><th>Vendor</th><th>Item</th><th>Qty</th><th>Amount</th><th>Requested By</th><th>Location</th><th>Approval</th><th>Payment</th><th>Actions</th>
+                        <th>Req No</th><th>Date</th><th>Factory</th><th>Type</th><th>Purpose</th><th>Req'd Amt</th><th>Paid</th><th>Balance</th><th>Approval</th><th>Payment</th><th>Completion</th><th>Created By</th><th>Actions</th>
                     </tr>
                     </thead>
                     <tbody></tbody>
@@ -150,11 +155,102 @@
     </div>
 </div>
 
-<div class="modal fade" id="approveModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><form id="approveForm" class="modal-body"><h6>Approve Request</h6><input type="hidden" name="request_id" id="approveRequestId"><div class="mb-2"><label class="form-label">Approved Amount</label><input class="form-control" type="number" step="0.01" name="approved_amount" required></div><div class="mb-2"><label class="form-label">Remarks</label><textarea class="form-control" name="remarks"></textarea></div><div class="mb-2"><label class="form-label">Priority</label><select class="form-select" name="priority"><option>High</option><option selected>Medium</option><option>Low</option></select></div><div class="mb-2"><label class="form-label">Expected Payment Date</label><input class="form-control" type="date" name="expected_payment_date"></div><div class="d-flex gap-2"><button class="btn btn-success" type="submit">Approve</button><button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">Cancel</button></div></form></div></div></div>
+<div class="modal fade" id="approveModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="approveForm">
+        <div class="modal-header">
+          <h5 class="modal-title" id="approveModalLabel">Approve Request</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="request_id" id="approveRequestId">
+          <div class="row g-2 mb-3 text-center">
+            <div class="col-4">
+              <div class="p-2 bg-light rounded">
+                <small class="text-muted d-block">Requested</small>
+                <strong id="approveReqAmt">&#8377;0</strong>
+              </div>
+            </div>
+            <div class="col-4">
+              <div class="p-2 bg-light rounded">
+                <small class="text-muted d-block">Already Paid</small>
+                <strong id="approvePaidAmt">&#8377;0</strong>
+              </div>
+            </div>
+            <div class="col-4">
+              <div class="p-2 rounded" style="background:#fff3cd">
+                <small class="text-muted d-block">Balance</small>
+                <strong id="approveBalance">&#8377;0</strong>
+              </div>
+            </div>
+          </div>
+          <div class="mb-2">
+            <label class="form-label">Amount to Pay Now <span class="text-danger">*</span></label>
+            <input class="form-control" type="number" step="0.01" min="0.01" name="paid_amount" id="approveAmtInput" required>
+          </div>
+          <div class="mb-2">
+            <label class="form-label">Payment Mode</label>
+            <select class="form-select" name="payment_mode">{% for m in payment_modes %}<option>{{ m.name }}</option>{% endfor %}</select>
+          </div>
+          <div class="mb-2">
+            <label class="form-label">Remarks</label>
+            <textarea class="form-control" name="remarks" id="approveRemarks" rows="2"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-success" type="submit" id="approveSubmitBtn">Approve</button>
+          <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 
 <div class="modal fade" id="rejectModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><form id="rejectForm" class="modal-body"><h6>Reject Request</h6><input type="hidden" name="request_id" id="rejectRequestId"><div class="mb-2"><label class="form-label">Reason</label><textarea class="form-control" name="reason" required></textarea></div><div class="d-flex gap-2"><button class="btn btn-danger" type="submit">Reject</button><button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">Cancel</button></div></form></div></div></div>
 
-<div class="modal fade" id="payModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><form id="payForm" class="modal-body"><h6>Mark Paid</h6><input type="hidden" name="request_id" id="payRequestId"><div class="row g-2"><div class="col-md-6"><label class="form-label">Payment Date</label><input class="form-control" type="date" name="payment_date" required></div><div class="col-md-6"><label class="form-label">Payment Mode</label><select class="form-select" name="payment_mode">{% for m in payment_modes %}<option>{{ m.name }}</option>{% endfor %}</select></div></div><div class="mb-2"><label class="form-label">Transaction Ref</label><input class="form-control" name="transaction_ref"></div><div class="mb-2"><label class="form-label">Paid Amount</label><input class="form-control" type="number" step="0.01" name="paid_amount" required></div><div class="form-check"><input class="form-check-input" type="checkbox" name="partial_payment" id="partialPayment"><label class="form-check-label" for="partialPayment">Partial Payment</label></div><div class="mb-2"><label class="form-label">Remarks</label><textarea class="form-control" name="remarks"></textarea></div><div class="d-flex gap-2"><button class="btn btn-primary" type="submit">Save Payment</button><button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">Cancel</button></div></form></div></div></div>
+<div class="modal fade" id="payModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><form id="payForm" class="modal-body"><h6>Additional Payment</h6><input type="hidden" name="request_id" id="payRequestId"><div class="row g-2"><div class="col-md-6"><label class="form-label">Payment Date</label><input class="form-control" type="date" name="payment_date" required></div><div class="col-md-6"><label class="form-label">Payment Mode</label><select class="form-select" name="payment_mode">{% for m in payment_modes %}<option>{{ m.name }}</option>{% endfor %}</select></div></div><div class="mb-2"><label class="form-label">Transaction Ref</label><input class="form-control" name="transaction_ref"></div><div class="mb-2"><label class="form-label">Paid Amount</label><input class="form-control" type="number" step="0.01" name="paid_amount" required></div><div class="form-check mb-2"><input class="form-check-input" type="checkbox" name="partial_payment" id="partialPayment"><label class="form-check-label" for="partialPayment">Partial Payment</label></div><div class="mb-2"><label class="form-label">Remarks</label><textarea class="form-control" name="remarks"></textarea></div><div class="d-flex gap-2"><button class="btn btn-primary" type="submit">Save Payment</button><button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">Cancel</button></div></form></div></div></div>
+
+<div class="modal fade" id="verifyModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="verifyForm">
+        <div class="modal-header">
+          <h5 class="modal-title">Verify &amp; Close Request</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="request_id" id="verifyRequestId">
+          <p class="text-muted small">Review the factory completion details and mark this request as closed.</p>
+          <div id="verifyCompletionInfo" class="mb-3 p-2 bg-light rounded small"></div>
+          <div class="mb-2">
+            <label class="form-label">Closing Remarks</label>
+            <textarea class="form-control" name="closing_remarks" id="verifyRemarks" rows="3" placeholder="Optional remarks..."></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-success" type="submit"><i class="bi bi-patch-check me-1"></i>Verify &amp; Close</button>
+          <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="viewModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Request Details</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="viewModalBody"></div>
+      <div class="modal-footer">
+        <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 {% endblock %}
 {% block scripts %}
