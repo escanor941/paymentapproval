@@ -361,6 +361,7 @@ class AdminLocalClient:
         self._stats_var_approved = tk.StringVar(value="—")
         self._stats_var_rejected = tk.StringVar(value="—")
         self._stats_var_hold     = tk.StringVar(value="—")
+        self._stats_var_pending_completion = tk.StringVar(value="—")
         self._stats_var_amount   = tk.StringVar(value="\u20b9—")
 
         kpi_strip = tk.Frame(main_area, bg=MAIN_BG)
@@ -372,6 +373,7 @@ class AdminLocalClient:
             ("\u2705 Approved", self._stats_var_approved, "#f0fdf4", "#15803d"),
             ("\u274c Rejected", self._stats_var_rejected, "#fff1f2", "#be123c"),
             ("\u23f3 Partial Approved", self._stats_var_hold,     "#fff3cd", "#856404"),
+            ("\U0001f9fe Pending Completion", self._stats_var_pending_completion, "#ecfeff", "#0e7490"),
             ("\u20b9 Amount",   self._stats_var_amount,   "#f0f9ff", "#0369a1"),
         ]
         for label, var, card_bg, val_fg in kpi_defs:
@@ -933,6 +935,12 @@ class AdminLocalClient:
         approved = sum(1 for x in non_bills if (x.get("approval_status") or "") == "Approved")
         rejected = sum(1 for x in non_bills if (x.get("approval_status") or "") == "Rejected")
         hold     = sum(1 for x in non_bills if (x.get("approval_status") or "") in ("Partial Approved", "Hold"))
+        approved_items = [x for x in non_bills if (x.get("approval_status") or "") == "Approved"]
+        pending_completion = sum(
+            1
+            for x in approved_items
+            if (x.get("completion_status") or "Pending") in ("Pending", "Awaiting Completion")
+        )
 
         # Amount reflects only the active filter subset
         active_filter = getattr(self, "_status_filter", "")
@@ -947,6 +955,7 @@ class AdminLocalClient:
         self._stats_var_approved.set(str(approved))
         self._stats_var_rejected.set(str(rejected))
         self._stats_var_hold.set(str(hold))
+        self._stats_var_pending_completion.set(f"{pending_completion}/{approved}")
         self._stats_var_amount.set(f"\u20b9{amount:,.0f}")
 
     def _mark_item_as_viewed(self, req_id: int) -> None:
