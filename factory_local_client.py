@@ -22,6 +22,13 @@ APPROVAL_COLORS = {
 }
 
 
+def normalize_approval_status(status: str | None) -> str:
+    value = (status or "Pending").strip()
+    if value == "Hold":
+        return "Partial Approved"
+    return value
+
+
 def app_data_dir() -> Path:
     root = Path(os.getenv("APPDATA", str(Path.home()))) / APP_NAME
     root.mkdir(parents=True, exist_ok=True)
@@ -141,6 +148,7 @@ class FactoryLocalClient:
         self.f_purpose = tk.StringVar(value="")
         self.f_req_amount = tk.StringVar(value="")
         self.f_remarks = tk.StringVar(value="")
+        self.f_quotation_path = tk.StringVar(value="")
 
         self.b_vendor_name = tk.StringVar(value="")
         self.b_factory_id = tk.IntVar(value=0)
@@ -230,7 +238,8 @@ class FactoryLocalClient:
                     continue
                 try:
                     file_handle = open(file_path, "rb")
-                    files = {"bill_image": file_handle}
+                    file_key = "quotation" if endpoint == "/requests/factory" else "bill_image"
+                    files = {file_key: file_handle}
                 except Exception as exc:
                     with sqlite3.connect(db_path()) as conn:
                         conn.execute("UPDATE pending_uploads SET retry_count=?, last_error=? WHERE id=?",
@@ -405,6 +414,15 @@ class FactoryLocalClient:
         ttk.Entry(left, textvariable=self.f_remarks, width=fw).grid(row=r, column=1, **p)
 
         r += 1
+        ttk.Label(left, text="Quotation *", foreground="#b02a37").grid(row=r, column=0, padx=4, pady=5, sticky="w")
+        quot_row = ttk.Frame(left)
+        quot_row.grid(row=r, column=1, padx=4, pady=5, sticky="ew")
+        quot_row.columnconfigure(0, weight=1)
+        self.quotation_entry = ttk.Entry(quot_row, textvariable=self.f_quotation_path, state="readonly")
+        self.quotation_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ttk.Button(quot_row, text="Browse", command=self._browse_quotation).pack(side="left")
+
+        r += 1
         self.req_status_var = tk.StringVar(value="")
         self.req_status_label = ttk.Label(left, textvariable=self.req_status_var,
                                           wraplength=360, justify="left")
@@ -492,18 +510,6 @@ class FactoryLocalClient:
 
         self.tree.bind("<ButtonRelease-1>", _on_tree_click)
 
-        act_row = ttk.Frame(right)
-        act_row.pack(fill="x", pady=(4, 0))
-
-        def _abtn(p, t, c, bg="#1a3a6e"):
-            return tk.Button(p, text=t, command=c, bg=bg, fg="white",
-                             font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
-                             padx=8, pady=4, bd=0)
-
-        _abtn(act_row, "\U0001f5d1  Delete",         self.delete_selected,      "#b71c1c").pack(side="left", padx=(0, 4))
-        _abtn(act_row, "\U0001f9fe  View Bill",       self.view_bill_selected,   "#1565a0").pack(side="left", padx=(0, 4))
-        _abtn(act_row, "\u2705  Submit Completion",  self.completion_selected,  "#0d5c2e").pack(side="left")
-
     def _build_bill_upload_tab(self) -> None:
         frame = ttk.LabelFrame(self.bill_frame, text="Upload Actual Bill (Quick)", padding=14)
         frame.pack(fill="x", padx=20, pady=20)
@@ -560,6 +566,12 @@ class FactoryLocalClient:
             filetypes=[("Images & PDFs", "*.jpg *.jpeg *.png *.pdf"), ("All files", "*.*")])
         if path:
             self.b_file_path.set(path)
+
+    def _browse_quotation(self) -> None:
+        path = filedialog.askopenfilename(title="Select Quotation Document",
+            filetypes=[("Images & PDFs", "*.jpg *.jpeg *.png *.pdf"), ("All files", "*.*")])
+        if path:
+            self.f_quotation_path.set(path)
 
     def _reset_bill_form(self) -> None:
         self.b_vendor_name.set("")
@@ -737,11 +749,9 @@ class FactoryLocalClient:
 
         for r in rows:
             req_id = int(r[0])
-            approval_status    = r[5] or "Pending"
+            approval_status    = normalize_approval_status(r[5])
             completion_status  = r[6] or "Pending"
-            if approval_status == "Hold":
-                approval_status = "Partial Approved"
-            prev_status = r[8]
+            prev_status = normalize_approval_status(r[8]) if r[8] is not None else None
             self.bill_paths[req_id] = r[7] or ""
             vendor_bill_path     = r[10] or ""
             company_voucher_path = r[11] or ""
@@ -826,6 +836,12 @@ class FactoryLocalClient:
         except ValueError:
             self._req_status("Amount must be a positive number.", error=True); return
 
+        quotation_path = self.f_quotation_path.get().strip()
+        if not quotation_path:
+            self._req_status("Quotation document is required. Please browse and select a file.", error=True); return
+        if not Path(quotation_path).exists():
+            self._req_status("Selected quotation file no longer exists. Please browse again.", error=True); return
+
         data = {
             "factory_id": str(self.f_factory_id.get()),
             "request_type": self.f_request_type.get().strip(),
@@ -838,8 +854,11 @@ class FactoryLocalClient:
 
         self.submit_btn.config(state="disabled")
         self._req_status("Submitting, please wait...", error=False)
+        file_handle = None
         try:
-            r = self.session.post(f"{base}/requests/factory", data=data, timeout=30)
+            file_handle = open(quotation_path, "rb")
+            files = {"quotation": file_handle}
+            r = self.session.post(f"{base}/requests/factory", data=data, files=files, timeout=30)
             body = r.json() if r.headers.get("Content-Type", "").startswith("application/json") else {}
             if r.status_code != 200:
                 detail = body.get("detail", f"HTTP {r.status_code}")
@@ -856,10 +875,12 @@ class FactoryLocalClient:
                 self.clear_request_form()
                 self.sync_from_server(silent=True)
         except Exception as exc:
-            self._enqueue_pending_upload("request", "POST", "/requests/factory", data, None, str(exc))
+            self._enqueue_pending_upload("request", "POST", "/requests/factory", data, quotation_path, str(exc))
             self._req_status("Offline queue: request saved locally and will retry automatically.", error=False)
             self.clear_request_form()
         finally:
+            if file_handle is not None:
+                file_handle.close()
             self.submit_btn.config(state="normal")
 
     def completion_selected(self) -> None:
@@ -1233,6 +1254,7 @@ class FactoryLocalClient:
         self.f_request_type.set("Material")
         self.f_req_amount.set("")
         self.f_remarks.set("")
+        self.f_quotation_path.set("")
         if hasattr(self, "purpose_text"):
             self.purpose_text.delete("1.0", "end")
         if hasattr(self, "req_status_var"):
