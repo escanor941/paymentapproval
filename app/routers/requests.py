@@ -43,6 +43,9 @@ def _entry_type(req: PurchaseRequest) -> str:
 
 def _as_dict(req: PurchaseRequest) -> dict:
     display_vendor = (req.vendor_mobile or "").strip() or (req.vendor.name if req.vendor else "")
+    # Keep bill visibility backward-compatible for records that stored
+    # the primary document in completion_bill_path.
+    effective_bill_path = (req.bill_image_path or req.completion_bill_path or "")
     return {
         "id": req.id,
         "request_date": str(req.request_date),
@@ -66,7 +69,7 @@ def _as_dict(req: PurchaseRequest) -> dict:
         "geo_captured_at": str(req.geo_captured_at) if req.geo_captured_at else None,
         "is_in_factory": req.is_in_factory,
         "distance_from_factory_m": req.distance_from_factory_m,
-        "bill_image_path": req.bill_image_path,
+        "bill_image_path": effective_bill_path,
         "notes": req.notes,
         # Factory workflow v2 fields
         "request_type": req.request_type,
@@ -401,10 +404,11 @@ def create_factory_request(
     geo_latitude: float | None = Form(None),
     geo_longitude: float | None = Form(None),
     geo_accuracy_m: float | None = Form(None),
+    quotation: UploadFile | None = File(None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Simplified factory request creation — Request Type, Purpose, Amount, Remarks."""
+    """Simplified factory request creation — Request Type, Purpose, Amount, Remarks, Quotation."""
     if user.role != "factory":
         raise HTTPException(403, "Only factory users can use this endpoint")
     if request_type not in VALID_REQUEST_TYPES:
@@ -414,6 +418,8 @@ def create_factory_request(
         raise HTTPException(400, "Purpose is required")
     if amount <= 0:
         raise HTTPException(400, "Amount must be greater than zero")
+    if not quotation or not quotation.filename:
+        raise HTTPException(400, "Quotation document is required")
 
     factory_obj = db.get(Factory, factory_id)
     if not factory_obj or factory_obj.is_deleted:
@@ -426,6 +432,8 @@ def create_factory_request(
 
     is_in_factory, distance_from_factory_m = _compute_presence(factory_obj, geo_latitude, geo_longitude)
     geo_captured_at = datetime.utcnow() if geo_latitude is not None and geo_longitude is not None else None
+
+    quotation_path = save_upload(quotation)
 
     req = PurchaseRequest(
         request_date=date.today(),
@@ -457,6 +465,7 @@ def create_factory_request(
         approval_status="Pending",
         payment_status="Unpaid",
         is_unread_admin=True,
+        bill_image_path=quotation_path,
     )
     try:
         db.add(req)
@@ -986,7 +995,7 @@ def view_bill(
     if user.role != "admin" and req.requested_by_user_id != user.id:
         raise HTTPException(403, "Not authorized")
 
-    path = (req.bill_image_path or "").strip()
+    path = (req.bill_image_path or req.completion_bill_path or "").strip()
     if not path:
         raise HTTPException(404, "No bill attached to this request")
 
