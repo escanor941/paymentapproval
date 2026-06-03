@@ -282,7 +282,7 @@ class FactoryLocalClient:
             self.sync_from_server(silent=True)
 
     def _apply_theme(self) -> None:
-        BG, PRIMARY, WHITE = "#f0f4f8", "#1a3a6e", "#ffffff"
+        BG, PRIMARY, WHITE = "#e7edf8", "#0b2247", "#ffffff"
         style = ttk.Style(self.root)
         style.theme_use("clam")
         self.root.configure(bg=BG)
@@ -292,18 +292,18 @@ class FactoryLocalClient:
         style.configure("TLabelframe", background=BG)
         style.configure("TLabelframe.Label", background=BG, font=("Segoe UI", 10, "bold"), foreground=PRIMARY)
         style.configure("TNotebook", background=BG, tabmargins=[2, 5, 2, 0])
-        style.configure("TNotebook.Tab", background="#c9d6e8", foreground=PRIMARY,
+        style.configure("TNotebook.Tab", background="#c6d6eb", foreground=PRIMARY,
                         font=("Segoe UI", 10, "bold"), padding=[14, 6])
-        style.map("TNotebook.Tab", background=[("selected", PRIMARY)], foreground=[("selected", WHITE)])
+        style.map("TNotebook.Tab", background=[("selected", "#0ea5b7")], foreground=[("selected", WHITE)])
         style.configure("Treeview", background=WHITE, fieldbackground=WHITE,
                         font=("Segoe UI", 10), rowheight=28)
         style.configure("Treeview.Heading", background=PRIMARY, foreground=WHITE,
-                        font=("Segoe UI", 10, "bold"), relief="flat")
-        style.map("Treeview", background=[("selected", "#2563a8")], foreground=[("selected", WHITE)])
+                font=("Segoe UI", 10, "bold"), relief="raised", borderwidth=1)
+        style.map("Treeview", background=[("selected", "#155e75")], foreground=[("selected", WHITE)])
         style.configure("TEntry", fieldbackground=WHITE, font=("Segoe UI", 10), padding=4)
         style.configure("TCombobox", fieldbackground=WHITE, font=("Segoe UI", 10))
         style.configure("TCheckbutton", background=BG, font=("Segoe UI", 10))
-        style.configure("TScrollbar", background="#c9d6e8", troughcolor="#e0e8f0", relief="flat")
+        style.configure("TScrollbar", background="#b5c8de", troughcolor="#dde7f5", relief="raised")
 
     def _draw_emd_logo(self, canvas: tk.Canvas) -> None:
         canvas.create_rectangle(0, 0, 190, 65, fill="#1a3a6e", outline="")
@@ -316,26 +316,27 @@ class FactoryLocalClient:
 
     def _build_ui(self) -> None:
         # ── Header bar ──────────────────────────────────────────────────────
-        hdr = tk.Frame(self.root, bg="#1a3a6e", height=75)
+        hdr = tk.Frame(self.root, bg="#0b2247", height=75)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
-        logo_c = tk.Canvas(hdr, width=190, height=65, bg="#1a3a6e", highlightthickness=0)
+        logo_c = tk.Canvas(hdr, width=190, height=65, bg="#0b2247", highlightthickness=0)
         logo_c.pack(side="left", padx=(12, 0), pady=5)
         self._draw_emd_logo(logo_c)
-        title_f = tk.Frame(hdr, bg="#1a3a6e")
+        title_f = tk.Frame(hdr, bg="#0b2247")
         title_f.pack(side="left", padx=14, pady=10)
-        tk.Label(title_f, text="Factory Panel", bg="#1a3a6e", fg="white",
+        tk.Label(title_f, text="Factory Panel", bg="#0b2247", fg="white",
                  font=("Segoe UI", 18, "bold")).pack(anchor="w")
         tk.Label(title_f, text="Purchase Request Submission  —  Site / Factory",
-                 bg="#1a3a6e", fg="#a8c4e0", font=("Segoe UI", 9)).pack(anchor="w")
-        right_hdr = tk.Frame(hdr, bg="#1a3a6e")
+             bg="#0b2247", fg="#b8d8f2", font=("Segoe UI", 9)).pack(anchor="w")
+        right_hdr = tk.Frame(hdr, bg="#0b2247")
         right_hdr.pack(side="right", padx=14)
-        self._conn_dot = tk.Label(right_hdr, text="●", bg="#1a3a6e", fg="#dc3545", font=("Segoe UI", 16))
+        self._conn_dot = tk.Label(right_hdr, text="●", bg="#0b2247", fg="#dc3545", font=("Segoe UI", 16))
         self._conn_dot.pack(side="right", padx=(4, 0))
-        tk.Label(right_hdr, textvariable=self.conn_text, bg="#1a3a6e", fg="white",
+        tk.Label(right_hdr, textvariable=self.conn_text, bg="#0b2247", fg="white",
                  font=("Segoe UI", 10, "bold")).pack(side="right")
-        tk.Label(right_hdr, text=DEFAULT_BASE_URL, bg="#1a3a6e", fg="#7bafd4",
+        tk.Label(right_hdr, text=DEFAULT_BASE_URL, bg="#0b2247", fg="#9fd8ff",
                  font=("Segoe UI", 7)).pack(side="right", padx=(0, 10))
+        tk.Frame(self.root, bg="#9fb5cf", height=2).pack(fill="x", padx=6, pady=(0, 4))
 
         # ── Connection / login bar ─────────────────────────────────────────
         login_bar = ttk.Frame(self.root, padding=(8, 6, 8, 2))
@@ -345,10 +346,11 @@ class FactoryLocalClient:
         ttk.Label(login_bar, text="Password").grid(row=0, column=1, sticky="w")
         ttk.Entry(login_bar, textvariable=self.password, show="*", width=20).grid(row=1, column=1, padx=(0, 8), sticky="w")
 
-        def _hbtn(parent, text, cmd, bg="#1a3a6e"):
+        def _hbtn(parent, text, cmd, bg="#0b2247"):
             return tk.Button(parent, text=text, command=cmd, bg=bg, fg="white",
-                             font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
-                             padx=10, pady=5, activebackground="#0d2a56", activeforeground="white", bd=0)
+                             font=("Segoe UI", 9, "bold"), relief="raised", cursor="hand2",
+                             padx=10, pady=5, activebackground="#0ea5b7", activeforeground="white",
+                             bd=1, overrelief="ridge")
 
         _hbtn(login_bar, "\U0001f510  Login", self.login).grid(row=1, column=2, padx=(0, 6))
         _hbtn(login_bar, "\U0001f504  Sync",  self.sync_from_server, "#1565a0").grid(row=1, column=3, padx=(0, 6))
@@ -358,11 +360,11 @@ class FactoryLocalClient:
                   font=("Segoe UI", 9, "italic")).grid(row=1, column=5, padx=8, sticky="w")
 
         # ── Footer ────────────────────────────────────────────────────────────
-        footer = tk.Frame(self.root, bg="#1a3a6e", height=22)
+        footer = tk.Frame(self.root, bg="#0b2247", height=22)
         footer.pack(side="bottom", fill="x")
         footer.pack_propagate(False)
         tk.Label(footer, text="Created by Daniyal  •  All Rights Reserved © 2026",
-                 bg="#1a3a6e", fg="#a8c4e0", font=("Segoe UI", 8)).pack(side="right", padx=12)
+             bg="#0b2247", fg="#9fd8ff", font=("Segoe UI", 8)).pack(side="right", padx=12)
 
         nb = ttk.Notebook(self.root)
         nb.pack(fill="both", expand=True, padx=10, pady=8)
@@ -434,8 +436,8 @@ class FactoryLocalClient:
 
         def _fbtn(p, t, c, bg="#1a3a6e"):
             return tk.Button(p, text=t, command=c, bg=bg, fg="white",
-                             font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
-                             padx=10, pady=5, bd=0)
+                             font=("Segoe UI", 9, "bold"), relief="raised", cursor="hand2",
+                             padx=10, pady=5, bd=1, overrelief="ridge")
 
         self.submit_btn = _fbtn(btn_row, "\U0001f4e4  Submit Request", self.submit_request, "#1b5e20")
         self.submit_btn.pack(side="left", padx=(0, 6))
@@ -541,11 +543,11 @@ class FactoryLocalClient:
         btn_row.grid(row=r, column=0, columnspan=3, padx=6, pady=10, sticky="w")
         self.bill_btn = tk.Button(btn_row, text="\U0001f4e4  Upload Bill", command=self.submit_bill_upload,
                                   bg="#1b5e20", fg="white", font=("Segoe UI", 9, "bold"),
-                                  relief="flat", cursor="hand2", padx=10, pady=5, bd=0)
+                                  relief="raised", cursor="hand2", padx=10, pady=5, bd=1, overrelief="ridge")
         self.bill_btn.pack(side="left", padx=(0, 6))
         tk.Button(btn_row, text="\U0001f504  Reset", command=self._reset_bill_form,
                   bg="#546e7a", fg="white", font=("Segoe UI", 9, "bold"),
-                  relief="flat", cursor="hand2", padx=10, pady=5, bd=0).pack(side="left")
+                  relief="raised", cursor="hand2", padx=10, pady=5, bd=1, overrelief="ridge").pack(side="left")
 
     def _on_factory_select(self, _=None) -> None:
         name = self.f_factory_name.get()
