@@ -619,6 +619,9 @@ def submit_completion(
 def create_simple_bill_upload(
     vendor_name: str = Form(...),
     factory_id: int | None = Form(None),
+    bill_amount: float | None = Form(None),
+    bill_date: date | None = Form(None),
+    bill_description: str | None = Form(None),
     geo_latitude: float | None = Form(None),
     geo_longitude: float | None = Form(None),
     geo_accuracy_m: float | None = Form(None),
@@ -633,6 +636,9 @@ def create_simple_bill_upload(
     if not clean_vendor_name:
         raise HTTPException(400, "Vendor name is required")
 
+    if bill_amount is not None and bill_amount <= 0:
+        raise HTTPException(400, "Bill amount must be greater than zero")
+
     selected_factory = _resolve_factory_for_simple_bill(db, factory_id)
 
     bill_path = _save_file(bill_image)
@@ -642,19 +648,19 @@ def create_simple_bill_upload(
     is_in_factory, distance_from_factory_m = _compute_presence(selected_factory, geo_latitude, geo_longitude)
 
     req = PurchaseRequest(
-        request_date=date.today(),
+        request_date=bill_date or date.today(),
         factory_id=selected_factory.id,
         vendor_id=0,
         vendor_mobile=clean_vendor_name,
         item_category="Bill Upload",
-        item_name="Actual Bill Upload",
+        item_name="Standalone Bill Upload",
         qty=1,
         unit="Nos",
-        rate=1,
-        amount=1,
+        rate=round(float(bill_amount), 2) if bill_amount is not None else 1,
+        amount=round(float(bill_amount), 2) if bill_amount is not None else 1,
         gst_percent=0,
-        final_amount=1,
-        reason="Actual bill uploaded via simple tab",
+        final_amount=round(float(bill_amount), 2) if bill_amount is not None else 1,
+        reason=(bill_description or "Bill uploaded via standalone panel").strip() or "Bill uploaded via standalone panel",
         urgent_flag=False,
         requested_by=user.name,
         requested_by_user_id=user.id,
@@ -665,7 +671,7 @@ def create_simple_bill_upload(
         is_in_factory=is_in_factory,
         distance_from_factory_m=distance_from_factory_m,
         bill_image_path=bill_path,
-        notes="Simple bill upload",
+        notes=(bill_description or "").strip() or "Standalone bill upload",
         approval_status="Pending",
         payment_status="Unpaid",
         is_unread_admin=True,

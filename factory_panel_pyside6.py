@@ -1076,29 +1076,69 @@ class FactoryPanelPySide6(QMainWindow):
             self.bill_status_label.setText("Please select a bill file.")
             self.bill_status_label.setStyleSheet(f"color: {GlassColors.STATUS_REJECTED}; font-size: 10px;")
             return
-        
-        # Save bill locally as fallback
-        self.bill_status_label.setText("Saving bill locally...")
-        self.bill_status_label.setStyleSheet(f"color: {GlassColors.STATUS_PENDING}; font-size: 10px;")
-        
         try:
-            # Create bills directory
+            bill_amount = float(amount)
+            if bill_amount <= 0:
+                raise ValueError
+        except ValueError:
+            self.bill_status_label.setText("Please enter a valid bill amount.")
+            self.bill_status_label.setStyleSheet(f"color: {GlassColors.STATUS_REJECTED}; font-size: 10px;")
+            return
+
+        try:
+            bill_date = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            self.bill_status_label.setText("Please enter a valid bill date in YYYY-MM-DD format.")
+            self.bill_status_label.setStyleSheet(f"color: {GlassColors.STATUS_REJECTED}; font-size: 10px;")
+            return
+
+        self.bill_status_label.setText("Uploading bill to server...")
+        self.bill_status_label.setStyleSheet(f"color: {GlassColors.STATUS_PENDING}; font-size: 10px;")
+
+        try:
+            data = {
+                "vendor_name": vendor,
+                "bill_amount": f"{bill_amount:.2f}",
+                "bill_date": bill_date.isoformat(),
+                "bill_description": self.bill_desc_input.text().strip(),
+            }
+            if self.bill_factory_id > 0:
+                data["factory_id"] = str(self.bill_factory_id)
+
+            with open(file_path, "rb") as f:
+                response = self.session.post(
+                    f"{self.base_url}/requests/simple-bill",
+                    data=data,
+                    files={"bill_image": f},
+                    timeout=30,
+                )
+
+            response_body = response.json() if response.headers.get("Content-Type", "").startswith("application/json") else {}
+            if response.status_code == 200:
+                message = response_body.get("message", "Bill uploaded")
+                self.bill_status_label.setText(f"✓ {message}")
+                self.bill_status_label.setStyleSheet(f"color: {GlassColors.STATUS_APPROVED}; font-size: 10px;")
+                self.clear_bill_form()
+                return
+
+            detail = response_body.get("detail", f"HTTP {response.status_code}")
+            raise RuntimeError(str(detail))
+
+        except Exception as exc:
             bills_dir = app_data_dir() / "standalone_bills"
             bills_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Copy bill file to local storage
+
             bill_filename = f"{vendor}_{date}_{Path(file_path).name}"
             dest_path = bills_dir / bill_filename
-            
+
             import shutil
             shutil.copy2(file_path, dest_path)
-            
-            # Save bill metadata to database
+
             with sqlite3.connect(db_path()) as conn:
                 conn.execute(
                     """
-                    INSERT INTO standalone_bills 
-                    (factory_id, factory_name, vendor, amount, bill_date, description, 
+                    INSERT INTO standalone_bills
+                    (factory_id, factory_name, vendor, amount, bill_date, description,
                      file_path, uploaded_by, uploaded_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -1111,16 +1151,18 @@ class FactoryPanelPySide6(QMainWindow):
                         self.bill_desc_input.text().strip(),
                         str(dest_path),
                         self.username,
-                        datetime.now().isoformat()
-                    )
+                        datetime.now().isoformat(),
+                    ),
                 )
                 conn.commit()
-            
-            self.bill_status_label.setText("Bill saved locally (server upload not available)")
+
+            self.bill_status_label.setText("Bill saved locally (server upload failed)")
             self.bill_status_label.setStyleSheet(f"color: {GlassColors.STATUS_APPROVED}; font-size: 10px;")
             self.clear_bill_form()
-            
-        except Exception as exc:
+
+            if isinstance(exc, RuntimeError):
+                return
+
             self.bill_status_label.setText(f"Save failed: {exc}")
             self.bill_status_label.setStyleSheet(f"color: {GlassColors.STATUS_REJECTED}; font-size: 10px;")
     
