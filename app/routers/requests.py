@@ -33,11 +33,7 @@ def _compute_amounts(qty: float, rate: float, gst_percent: float) -> tuple[float
 
 def _entry_type(req: PurchaseRequest) -> str:
     # Explicitly classify rows so admin UI can separate tabs reliably.
-    if (
-        (req.item_category or "").strip().lower() == "bill upload"
-        and (req.item_name or "").strip().lower() == "actual bill upload"
-        and (req.reason or "").strip().lower() == "actual bill uploaded via simple tab"
-    ):
+    if (req.item_category or "").strip().lower() == "bill upload":
         return "simple_bill_upload"
     return "purchase_request"
 

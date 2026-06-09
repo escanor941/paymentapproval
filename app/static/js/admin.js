@@ -74,6 +74,9 @@ function renderRequests(items) {
   requestsMap = {};
   reqBody.innerHTML = '';
   (items || []).forEach(it => {
+    const isBillUpload = (it.entry_type === 'simple_bill_upload')
+      || String(it.item_category || '').trim().toLowerCase() === 'bill upload';
+    if (isBillUpload) return;
     requestsMap[it.id] = it;
     const tr = document.createElement('tr');
     if (it.is_unread_admin) tr.classList.add('new-row');
@@ -240,6 +243,9 @@ async function loadSimpleBills() {
   simpleBillBody.innerHTML = '';
 
   (data.items || []).forEach(it => {
+    const isBillUpload = (it.entry_type === 'simple_bill_upload')
+      || String(it.item_category || '').trim().toLowerCase() === 'bill upload';
+    if (!isBillUpload) return;
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${it.id}</td>
