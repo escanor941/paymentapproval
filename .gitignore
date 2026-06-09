@@ -17,6 +17,8 @@ uploads/
 htmlcov/
 dist/
 build/
+installer/
+installers/
 *.log
 node_modules/
 .gradle/

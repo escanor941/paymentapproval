@@ -186,6 +186,41 @@ def _upsert_presence(
     )
 
 
+def _resolve_factory_for_simple_bill(db: Session, factory_id: int | None) -> Factory:
+    if factory_id is not None:
+        factory_obj = db.scalar(
+            select(Factory).where(and_(Factory.id == factory_id, Factory.is_deleted.is_(False)))
+        )
+        if not factory_obj:
+            raise HTTPException(400, "Invalid factory")
+        return factory_obj
+
+    factory_obj = db.scalar(
+        select(Factory).where(Factory.is_deleted.is_(False)).order_by(Factory.id.asc())
+    )
+    if not factory_obj:
+        raise HTTPException(400, "No active factory found in masters")
+    return factory_obj
+
+
+def _resolve_vendor_for_simple_bill(db: Session, vendor_name: str) -> Vendor:
+    vendor_obj = db.scalar(
+        select(Vendor).where(
+            and_(
+                Vendor.is_deleted.is_(False),
+                func.lower(Vendor.name) == vendor_name.lower(),
+            )
+        )
+    )
+    if vendor_obj:
+        return vendor_obj
+
+    vendor_obj = Vendor(name=vendor_name)
+    db.add(vendor_obj)
+    db.flush()
+    return vendor_obj
+
+
 def _notify_request_submission(
     db: Session,
     req: PurchaseRequest,
@@ -598,33 +633,18 @@ def create_simple_bill_upload(
     if not clean_vendor_name:
         raise HTTPException(400, "Vendor name is required")
 
-    default_factory = None
-    if factory_id:
-        default_factory = db.scalar(
-            select(Factory).where(and_(Factory.id == factory_id, Factory.is_deleted.is_(False)))
-        )
-    if not default_factory:
-        default_factory = db.scalar(
-            select(Factory).where(Factory.is_deleted.is_(False)).order_by(Factory.id.asc())
-        )
-    default_vendor = db.scalar(
-        select(Vendor).where(Vendor.is_deleted.is_(False)).order_by(Vendor.id.asc())
-    )
-    if not default_factory:
-        raise HTTPException(400, "No active factory found in masters")
-    if not default_vendor:
-        raise HTTPException(400, "No active vendor found in masters")
+    selected_factory = _resolve_factory_for_simple_bill(db, factory_id)
 
     bill_path = _save_file(bill_image)
     if not bill_path:
         raise HTTPException(400, "Actual bill image is required")
 
-    is_in_factory, distance_from_factory_m = _compute_presence(default_factory, geo_latitude, geo_longitude)
+    is_in_factory, distance_from_factory_m = _compute_presence(selected_factory, geo_latitude, geo_longitude)
 
     req = PurchaseRequest(
         request_date=date.today(),
-        factory_id=default_factory.id,
-        vendor_id=default_vendor.id,
+        factory_id=selected_factory.id,
+        vendor_id=0,
         vendor_mobile=clean_vendor_name,
         item_category="Bill Upload",
         item_name="Actual Bill Upload",
@@ -651,11 +671,13 @@ def create_simple_bill_upload(
         is_unread_admin=True,
     )
     try:
+        resolved_vendor = _resolve_vendor_for_simple_bill(db, clean_vendor_name)
+        req.vendor_id = resolved_vendor.id
         db.add(req)
         _upsert_presence(
             db,
             user_id=user.id,
-            factory_id=default_factory.id,
+            factory_id=selected_factory.id,
             latitude=geo_latitude,
             longitude=geo_longitude,
             accuracy_m=geo_accuracy_m,

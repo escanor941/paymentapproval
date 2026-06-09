@@ -137,6 +137,10 @@ class FactoryLocalClient:
         self.password = tk.StringVar(value="")
         self.status_text = tk.StringVar(value="Not logged in")
         self.conn_text = tk.StringVar(value="Offline")
+        self._header_factory_var = tk.StringVar(value="Factory: Not selected")
+        self._header_user_var = tk.StringVar(value="User: Guest")
+        self._header_status_var = tk.StringVar(value="Status: Offline")
+        self._header_sync_var = tk.StringVar(value="Last Sync: Never")
         self.auto_sync_enabled = tk.BooleanVar(value=True)
         self.logged_in = False
         self.edit_request_id: int | None = None
@@ -157,10 +161,19 @@ class FactoryLocalClient:
 
         self.filt_status = tk.StringVar(value="")
         self.filt_completion = tk.StringVar(value="")
+        self._dash_pending_var = tk.StringVar(value="0")
+        self._dash_awaiting_var = tk.StringVar(value="0")
+        self._dash_submitted_var = tk.StringVar(value="0")
+        self._dash_updates_var = tk.StringVar(value="0")
+        self._dash_note_var = tk.StringVar(value="No pending operational alerts")
+        self._last_sync_text = "Never"
 
         self.factories: list[dict] = []
         self.bill_paths: dict[int, str] = {}
         self.edit_request_id: int | None = None
+        self.login_bar: ttk.Frame | None = None
+        self._row_tags: dict[str, tuple[str, ...]] = {}
+        self._hover_item: str | None = None
 
         self._build_ui()
         self._refresh_combos()
@@ -282,28 +295,41 @@ class FactoryLocalClient:
             self.sync_from_server(silent=True)
 
     def _apply_theme(self) -> None:
-        BG, PRIMARY, WHITE = "#e7edf8", "#0b2247", "#ffffff"
+        BG, PRIMARY, WHITE = "#f3f5f7", "#1f6fbe", "#ffffff"
         style = ttk.Style(self.root)
         style.theme_use("clam")
         self.root.configure(bg=BG)
-        style.configure(".", background=BG, font=("Segoe UI", 10))
+        style.configure(".", background=BG, foreground="#1f2937", font=("Segoe UI", 10))
         style.configure("TFrame", background=BG)
-        style.configure("TLabel", background=BG, font=("Segoe UI", 10))
+        style.configure("TLabel", background=BG, foreground="#1f2937", font=("Segoe UI", 10))
         style.configure("TLabelframe", background=BG)
-        style.configure("TLabelframe.Label", background=BG, font=("Segoe UI", 10, "bold"), foreground=PRIMARY)
+        style.configure("TLabelframe.Label", background=BG, font=("Segoe UI", 10, "bold"), foreground="#1f2937")
         style.configure("TNotebook", background=BG, tabmargins=[2, 5, 2, 0])
-        style.configure("TNotebook.Tab", background="#c6d6eb", foreground=PRIMARY,
-                        font=("Segoe UI", 10, "bold"), padding=[14, 6])
-        style.map("TNotebook.Tab", background=[("selected", "#0ea5b7")], foreground=[("selected", WHITE)])
-        style.configure("Treeview", background=WHITE, fieldbackground=WHITE,
-                        font=("Segoe UI", 10), rowheight=28)
-        style.configure("Treeview.Heading", background=PRIMARY, foreground=WHITE,
-                font=("Segoe UI", 10, "bold"), relief="raised", borderwidth=1)
-        style.map("Treeview", background=[("selected", "#155e75")], foreground=[("selected", WHITE)])
-        style.configure("TEntry", fieldbackground=WHITE, font=("Segoe UI", 10), padding=4)
-        style.configure("TCombobox", fieldbackground=WHITE, font=("Segoe UI", 10))
+        style.configure("TNotebook.Tab", background="#e8edf3", foreground="#334155",
+                font=("Segoe UI", 10, "bold"), padding=[16, 7])
+        style.map("TNotebook.Tab", background=[("selected", "#1f6fbe")], foreground=[("selected", WHITE)])
+        style.configure("Treeview", background="#ffffff", fieldbackground="#ffffff",
+            foreground="#111827", font=("Segoe UI", 10), rowheight=32)
+        style.configure("Treeview.Heading", background="#1f6fbe", foreground=WHITE,
+            font=("Segoe UI", 10, "bold"), relief="flat", borderwidth=0, padding=(10, 8))
+        style.map("Treeview", background=[("selected", "#2f74d0")], foreground=[("selected", WHITE)])
+        style.configure("TEntry", fieldbackground="#ffffff", foreground="#111827", font=("Segoe UI", 10), padding=5)
+        style.configure("TCombobox", fieldbackground="#ffffff", foreground="#111827", font=("Segoe UI", 10))
         style.configure("TCheckbutton", background=BG, font=("Segoe UI", 10))
-        style.configure("TScrollbar", background="#b5c8de", troughcolor="#dde7f5", relief="raised")
+        style.configure("TScrollbar", background="#d1d5db", troughcolor="#eef2f7", relief="flat")
+
+    def _refresh_header_summary(self) -> None:
+        factory_name = self.f_factory_name.get().strip() or self.b_factory_name.get().strip() or "Not selected"
+        user_name = self.username.get().strip() or "Guest"
+        connection = self.conn_text.get().strip() or "Offline"
+        self._header_factory_var.set(f"Factory: {factory_name}")
+        self._header_user_var.set(f"User: {user_name}")
+        self._header_status_var.set(f"Status: {connection}")
+        self._header_sync_var.set(f"Last Sync: {self._last_sync_text}")
+
+    def _collapse_login_bar(self) -> None:
+        if self.login_bar is not None:
+            self.login_bar.pack_forget()
 
     def _draw_emd_logo(self, canvas: tk.Canvas) -> None:
         canvas.create_rectangle(0, 0, 190, 65, fill="#1a3a6e", outline="")
@@ -316,58 +342,68 @@ class FactoryLocalClient:
 
     def _build_ui(self) -> None:
         # ── Header bar ──────────────────────────────────────────────────────
-        hdr = tk.Frame(self.root, bg="#0b2247", height=75)
+        hdr = tk.Frame(self.root, bg="#1f6fbe", height=72)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
-        logo_c = tk.Canvas(hdr, width=190, height=65, bg="#0b2247", highlightthickness=0)
+        logo_c = tk.Canvas(hdr, width=190, height=65, bg="#1f6fbe", highlightthickness=0)
         logo_c.pack(side="left", padx=(12, 0), pady=5)
         self._draw_emd_logo(logo_c)
-        title_f = tk.Frame(hdr, bg="#0b2247")
+        title_f = tk.Frame(hdr, bg="#1f6fbe")
         title_f.pack(side="left", padx=14, pady=10)
-        tk.Label(title_f, text="Factory Panel", bg="#0b2247", fg="white",
+        tk.Label(title_f, text="Factory Panel", bg="#1f6fbe", fg="white",
                  font=("Segoe UI", 18, "bold")).pack(anchor="w")
         tk.Label(title_f, text="Purchase Request Submission  —  Site / Factory",
-             bg="#0b2247", fg="#b8d8f2", font=("Segoe UI", 9)).pack(anchor="w")
-        right_hdr = tk.Frame(hdr, bg="#0b2247")
+                 bg="#1f6fbe", fg="#e8f2ff", font=("Segoe UI", 9)).pack(anchor="w")
+
+        right_hdr = tk.Frame(hdr, bg="#1f6fbe")
         right_hdr.pack(side="right", padx=14)
-        self._conn_dot = tk.Label(right_hdr, text="●", bg="#0b2247", fg="#dc3545", font=("Segoe UI", 16))
-        self._conn_dot.pack(side="right", padx=(4, 0))
-        tk.Label(right_hdr, textvariable=self.conn_text, bg="#0b2247", fg="white",
-                 font=("Segoe UI", 10, "bold")).pack(side="right")
-        tk.Label(right_hdr, text=DEFAULT_BASE_URL, bg="#0b2247", fg="#9fd8ff",
-                 font=("Segoe UI", 7)).pack(side="right", padx=(0, 10))
-        tk.Frame(self.root, bg="#9fb5cf", height=2).pack(fill="x", padx=6, pady=(0, 4))
+
+        def _header_chip(parent, label_var: tk.StringVar) -> None:
+            chip = tk.Frame(parent, bg="#2f7ec9", padx=10, pady=5,
+                            highlightthickness=0,
+                            relief="flat", bd=0)
+            tk.Label(chip, textvariable=label_var, bg="#2f7ec9", fg="#ffffff",
+                     font=("Segoe UI", 8, "bold")).pack()
+            chip.pack(side="left", padx=4)
+
+        _header_chip(right_hdr, self._header_factory_var)
+        _header_chip(right_hdr, self._header_user_var)
+        _header_chip(right_hdr, self._header_status_var)
+        _header_chip(right_hdr, self._header_sync_var)
+
+        tk.Frame(self.root, bg="#dbe2ea", height=1).pack(fill="x")
 
         # ── Connection / login bar ─────────────────────────────────────────
-        login_bar = ttk.Frame(self.root, padding=(8, 6, 8, 2))
+        login_bar = ttk.Frame(self.root, padding=(10, 8, 10, 6))
         login_bar.pack(fill="x")
+        self.login_bar = login_bar
         ttk.Label(login_bar, text="Username").grid(row=0, column=0, sticky="w")
         ttk.Entry(login_bar, textvariable=self.username, width=20).grid(row=1, column=0, padx=(0, 8), sticky="w")
         ttk.Label(login_bar, text="Password").grid(row=0, column=1, sticky="w")
         ttk.Entry(login_bar, textvariable=self.password, show="*", width=20).grid(row=1, column=1, padx=(0, 8), sticky="w")
 
-        def _hbtn(parent, text, cmd, bg="#0b2247"):
+        def _hbtn(parent, text, cmd, bg="#1f6fbe"):
             return tk.Button(parent, text=text, command=cmd, bg=bg, fg="white",
-                             font=("Segoe UI", 9, "bold"), relief="raised", cursor="hand2",
-                             padx=10, pady=5, activebackground="#0ea5b7", activeforeground="white",
-                             bd=1, overrelief="ridge")
+                             font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
+                             padx=10, pady=5, activebackground="#2b82d9", activeforeground="white",
+                             bd=0, overrelief="ridge")
 
         _hbtn(login_bar, "\U0001f510  Login", self.login).grid(row=1, column=2, padx=(0, 6))
-        _hbtn(login_bar, "\U0001f504  Sync",  self.sync_from_server, "#1565a0").grid(row=1, column=3, padx=(0, 6))
+        _hbtn(login_bar, "\U0001f504  Sync", self.sync_from_server, "#1565a0").grid(row=1, column=3, padx=(0, 6))
         ttk.Checkbutton(login_bar, text="Auto Sync (30s)", variable=self.auto_sync_enabled).grid(
             row=1, column=4, padx=8)
-        ttk.Label(login_bar, textvariable=self.status_text, foreground="#1a3a6e",
+        ttk.Label(login_bar, textvariable=self.status_text, foreground="#334155",
                   font=("Segoe UI", 9, "italic")).grid(row=1, column=5, padx=8, sticky="w")
 
         # ── Footer ────────────────────────────────────────────────────────────
-        footer = tk.Frame(self.root, bg="#0b2247", height=22)
+        footer = tk.Frame(self.root, bg="#f3f5f7", height=22)
         footer.pack(side="bottom", fill="x")
         footer.pack_propagate(False)
         tk.Label(footer, text="Created by Daniyal  •  All Rights Reserved © 2026",
-             bg="#0b2247", fg="#9fd8ff", font=("Segoe UI", 8)).pack(side="right", padx=12)
+                 bg="#f3f5f7", fg="#64748b", font=("Segoe UI", 8)).pack(side="right", padx=12)
 
         nb = ttk.Notebook(self.root)
-        nb.pack(fill="both", expand=True, padx=10, pady=8)
+        nb.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         self.notebook = nb
         self.request_frame = ttk.Frame(nb)
         self.bill_frame = ttk.Frame(nb)
@@ -378,45 +414,53 @@ class FactoryLocalClient:
 
     def _build_request_tab(self) -> None:
         outer = self.request_frame
-        outer.columnconfigure(0, weight=0, minsize=420)
+        outer.columnconfigure(0, weight=0, minsize=360)
         outer.columnconfigure(1, weight=1)
         outer.rowconfigure(0, weight=1)
 
-        left = ttk.LabelFrame(outer, text="Create Purchase Request", padding=10)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=2)
+        left = tk.Frame(outer, bg="#ffffff", padx=10, pady=10,
+                highlightthickness=1, highlightbackground="#d9e0e8",
+                        relief="flat", bd=0)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=2)
         left.columnconfigure(1, weight=1)
         p = {"padx": 4, "pady": 5, "sticky": "ew"}
         fw = 28
 
+        tk.Label(left, text="Create Purchase Request", bg="#ffffff", fg="#0f172a",
+                 font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
         REQUEST_TYPES = ["Material", "Labour", "Transport", "Service", "Utility", "Emergency"]
 
-        r = 0
-        ttk.Label(left, text="Factory *").grid(row=r, column=0, padx=4, pady=5, sticky="w")
+        r = 1
+        tk.Label(left, text="Factory *", bg="#ffffff", fg="#334155", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, padx=4, pady=5, sticky="w")
         self.factory_combo = ttk.Combobox(left, textvariable=self.f_factory_name, state="readonly", width=fw)
         self.factory_combo.grid(row=r, column=1, **p)
         self.factory_combo.bind("<<ComboboxSelected>>", self._on_factory_select)
 
         r += 1
-        ttk.Label(left, text="Request Type *").grid(row=r, column=0, padx=4, pady=5, sticky="w")
+        tk.Label(left, text="Request Type *", bg="#ffffff", fg="#334155", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, padx=4, pady=5, sticky="w")
         self.type_combo = ttk.Combobox(left, textvariable=self.f_request_type,
                                        values=REQUEST_TYPES, state="readonly", width=fw)
         self.type_combo.grid(row=r, column=1, **p)
 
         r += 1
-        ttk.Label(left, text="Purpose *").grid(row=r, column=0, padx=4, pady=5, sticky="nw")
-        self.purpose_text = tk.Text(left, height=4, width=fw + 4)
+        tk.Label(left, text="Purpose *", bg="#ffffff", fg="#334155", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, padx=4, pady=5, sticky="nw")
+        self.purpose_text = tk.Text(left, height=5, width=fw + 4, bg="#ffffff", fg="#111827",
+                                    insertbackground="#111827", relief="flat",
+                        highlightthickness=1, highlightbackground="#cfd8e3",
+                                    font=("Segoe UI", 10))
         self.purpose_text.grid(row=r, column=1, padx=4, pady=5, sticky="ew")
 
         r += 1
-        ttk.Label(left, text="Amount ₹ *").grid(row=r, column=0, padx=4, pady=5, sticky="w")
+        tk.Label(left, text="Amount ₹ *", bg="#ffffff", fg="#334155", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, padx=4, pady=5, sticky="w")
         ttk.Entry(left, textvariable=self.f_req_amount, width=fw).grid(row=r, column=1, **p)
 
         r += 1
-        ttk.Label(left, text="Remarks").grid(row=r, column=0, padx=4, pady=5, sticky="w")
+        tk.Label(left, text="Remarks", bg="#ffffff", fg="#334155", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, padx=4, pady=5, sticky="w")
         ttk.Entry(left, textvariable=self.f_remarks, width=fw).grid(row=r, column=1, **p)
 
         r += 1
-        ttk.Label(left, text="Quotation *", foreground="#b02a37").grid(row=r, column=0, padx=4, pady=5, sticky="w")
+        tk.Label(left, text="Quotation *", bg="#ffffff", fg="#334155", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, padx=4, pady=5, sticky="w")
         quot_row = ttk.Frame(left)
         quot_row.grid(row=r, column=1, padx=4, pady=5, sticky="ew")
         quot_row.columnconfigure(0, weight=1)
@@ -427,62 +471,86 @@ class FactoryLocalClient:
         r += 1
         self.req_status_var = tk.StringVar(value="")
         self.req_status_label = ttk.Label(left, textvariable=self.req_status_var,
-                                          wraplength=360, justify="left")
+                                          wraplength=330, justify="left")
         self.req_status_label.grid(row=r, column=0, columnspan=2, padx=4, pady=(6, 0), sticky="w")
 
         r += 1
         btn_row = ttk.Frame(left)
         btn_row.grid(row=r, column=0, columnspan=2, padx=4, pady=10, sticky="w")
 
-        def _fbtn(p, t, c, bg="#1a3a6e"):
+        def _fbtn(p, t, c, bg="#1f6fbe"):
             return tk.Button(p, text=t, command=c, bg=bg, fg="white",
-                             font=("Segoe UI", 9, "bold"), relief="raised", cursor="hand2",
-                             padx=10, pady=5, bd=1, overrelief="ridge")
+                             font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
+                             padx=10, pady=5, bd=0, overrelief="ridge")
 
-        self.submit_btn = _fbtn(btn_row, "\U0001f4e4  Submit Request", self.submit_request, "#1b5e20")
+        self.submit_btn = _fbtn(btn_row, "\U0001f4e4  Submit Request", self.submit_request, "#15803d")
         self.submit_btn.pack(side="left", padx=(0, 6))
-        _fbtn(btn_row, "\U0001f504  Reset", self.clear_request_form, "#546e7a").pack(side="left")
+        _fbtn(btn_row, "\U0001f504  Reset", self.clear_request_form, "#64748b").pack(side="left")
 
         # ── My Requests section (right side) ──────────────────────────────
-        right = ttk.LabelFrame(outer, text="My Requests", padding=8)
+        right = tk.Frame(outer, bg="#ffffff", padx=8, pady=8,
+                 highlightthickness=1, highlightbackground="#d9e0e8",
+                 relief="flat", bd=0)
         right.grid(row=0, column=1, sticky="nsew", pady=2)
         right.columnconfigure(0, weight=1)
         right.rowconfigure(1, weight=1)
 
-        fbar = ttk.Frame(right)
+        kpi_row = tk.Frame(right, bg="#ffffff")
+        kpi_row.pack(fill="x", pady=(0, 6))
+
+        def _kpi(parent, label: str, var: tk.StringVar, bg: str, fg: str):
+            card = tk.Frame(parent, bg=bg, padx=8, pady=6,
+                            highlightthickness=1, highlightbackground="#d6dee8",
+                            relief="flat", bd=0)
+            card.pack(side="left", fill="x", expand=True, padx=(0, 6))
+            tk.Label(card, text=label, bg=bg, fg="#475569", font=("Segoe UI", 8, "bold")).pack(anchor="w")
+            tk.Label(card, textvariable=var, bg=bg, fg=fg, font=("Segoe UI", 12, "bold")).pack(anchor="w")
+
+        _kpi(kpi_row, "Approved", self._dash_pending_var, "#ecfdf3", "#15803d")
+        _kpi(kpi_row, "Pending", self._dash_awaiting_var, "#fff7ed", "#ea580c")
+        _kpi(kpi_row, "Partial", self._dash_updates_var, "#fefce8", "#ca8a04")
+        _kpi(kpi_row, "Rejected", self._dash_submitted_var, "#fff1f2", "#dc2626")
+
+        fbar = tk.Frame(right, bg="#ffffff")
         fbar.pack(fill="x", pady=(0, 6))
-        ttk.Label(fbar, text="Approval:").pack(side="left")
+        tk.Label(fbar, text="My Requests", bg="#ffffff", fg="#0f172a", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
+        tk.Label(fbar, text="Approval", bg="#ffffff", fg="#334155", font=("Segoe UI", 8, "bold")).grid(row=1, column=0, sticky="w")
         ttk.Combobox(fbar, textvariable=self.filt_status,
                      values=["", "Pending", "Partial Approved", "Approved", "Rejected"],
-                     state="readonly", width=14).pack(side="left", padx=(2, 8))
-        ttk.Label(fbar, text="Completion:").pack(side="left")
+                     state="readonly", width=14).grid(row=2, column=0, padx=(0, 8), sticky="w")
+        tk.Label(fbar, text="Completion", bg="#ffffff", fg="#334155", font=("Segoe UI", 8, "bold")).grid(row=1, column=1, sticky="w")
         ttk.Combobox(fbar, textvariable=self.filt_completion,
                      values=["", "Pending", "Awaiting Completion", "Completion Submitted", "Closed"],
-                     state="readonly", width=18).pack(side="left", padx=(2, 6))
-        ttk.Button(fbar, text="Search", command=self._apply_filters).pack(side="left")
-        ttk.Button(fbar, text="Clear", command=self._clear_filters).pack(side="left", padx=(4, 0))
+                     state="readonly", width=18).grid(row=2, column=1, padx=(0, 8), sticky="w")
+        ttk.Button(fbar, text="Search", command=self._apply_filters).grid(row=2, column=2, padx=(0, 4), sticky="w")
+        ttk.Button(fbar, text="Clear", command=self._clear_filters).grid(row=2, column=3, sticky="w")
+
+        tree_card = tk.Frame(right, bg="#ffffff", padx=0, pady=0,
+                             highlightthickness=1, highlightbackground="#d9e0e8",
+                     relief="flat", bd=0)
+        tree_card.pack(fill="both", expand=True)
 
         cols = ("id", "date", "type", "purpose", "amount", "approval", "completion", "actions")
-        self.tree = ttk.Treeview(right, columns=cols, show="headings", height=18)
-        self.tree.tag_configure("Approved",          background="#d4edda", foreground="#1f8a43")
-        self.tree.tag_configure("Rejected",          background="#f8d7da", foreground="#dc3545")
-        self.tree.tag_configure("Partial Approved",  background="#fff3cd", foreground="#856404")
-        self.tree.tag_configure("Pending",           background="#ffffff", foreground="#0b5ed7")
-        self.tree.tag_configure("Draft",             background="#f5f5f5", foreground="#6c757d")
-        self.tree.tag_configure("new_status",        background="#ffcccc", foreground="#cc0000")
-        self.tree.tag_configure("awaiting_comp",     background="#e8f4fd", foreground="#0369a1")
+        self.tree = ttk.Treeview(tree_card, columns=cols, show="headings", height=18)
+        self.tree.tag_configure("Approved",          background="#ecfdf3", foreground="#15803d")
+        self.tree.tag_configure("Rejected",          background="#fff1f2", foreground="#dc2626")
+        self.tree.tag_configure("Partial Approved",  background="#fefce8", foreground="#ca8a04")
+        self.tree.tag_configure("Pending",           background="#fff7ed", foreground="#ea580c")
+        self.tree.tag_configure("Draft",             background="#f8fafc", foreground="#64748b")
+        self.tree.tag_configure("new_status",        background="#eff6ff", foreground="#1f6fbe")
+        self.tree.tag_configure("awaiting_comp",     background="#eff6ff", foreground="#1f6fbe")
         for c in cols:
             self.tree.heading(c, text=c.title())
         self.tree.column("id",         width=50,  anchor="center")
-        self.tree.column("date",       width=95,  anchor="center")
+        self.tree.column("date",       width=100, anchor="center")
         self.tree.column("type",       width=90,  anchor="center")
-        self.tree.column("purpose",    width=160)
+        self.tree.column("purpose",    width=220)
         self.tree.column("amount",     width=90,  anchor="e")
         self.tree.column("approval",   width=110, anchor="center")
         self.tree.column("completion", width=130, anchor="center")
-        self.tree.column("actions",    width=160, anchor="center")
+        self.tree.column("actions",    width=255, anchor="center")
 
-        vs = ttk.Scrollbar(right, orient="vertical", command=self.tree.yview)
+        vs = ttk.Scrollbar(tree_card, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vs.set)
         self.tree.pack(side="left", fill="both", expand=True)
         vs.pack(side="right", fill="y")
@@ -501,24 +569,29 @@ class FactoryLocalClient:
             cell_val = self.tree.set(item, "actions")
             self.tree.selection_set(item)
             self.tree.focus(item)
-            if "[Submit Completion]" in cell_val:
+            if "Submit Completion" in cell_val:
                 self.completion_selected()
-            elif "[View Docs]" in cell_val:
+            elif "View Documents" in cell_val or "View Docs" in cell_val:
                 self.view_completion_docs(int(item))
-            elif "[Bill]" in cell_val:
+            elif "View Bill" in cell_val or "Bill" in cell_val:
                 self.view_bill_selected()
-            elif "[Delete]" in cell_val:
+            elif "Delete" in cell_val:
                 self.delete_selected()
 
         self.tree.bind("<ButtonRelease-1>", _on_tree_click)
 
     def _build_bill_upload_tab(self) -> None:
-        frame = ttk.LabelFrame(self.bill_frame, text="Upload Actual Bill (Quick)", padding=14)
+        frame = tk.Frame(self.bill_frame, bg="#ffffff", padx=14, pady=14,
+                         highlightthickness=1, highlightbackground="#d9e0e8",
+                         relief="flat", bd=0)
         frame.pack(fill="x", padx=20, pady=20)
         frame.columnconfigure(1, weight=1)
         p = {"padx": 6, "pady": 6, "sticky": "w"}
 
-        r = 0
+        tk.Label(frame, text="Upload Actual Bill", bg="#ffffff", fg="#0f172a",
+                 font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+        r = 1
         ttk.Label(frame, text="Factory *").grid(row=r, column=0, **p)
         self.bill_factory_combo = ttk.Combobox(frame, textvariable=self.b_factory_name, state="readonly", width=30)
         self.bill_factory_combo.grid(row=r, column=1, **p)
@@ -542,18 +615,21 @@ class FactoryLocalClient:
         btn_row = ttk.Frame(frame)
         btn_row.grid(row=r, column=0, columnspan=3, padx=6, pady=10, sticky="w")
         self.bill_btn = tk.Button(btn_row, text="\U0001f4e4  Upload Bill", command=self.submit_bill_upload,
-                                  bg="#1b5e20", fg="white", font=("Segoe UI", 9, "bold"),
-                                  relief="raised", cursor="hand2", padx=10, pady=5, bd=1, overrelief="ridge")
+                                  bg="#1f6fbe", fg="white", font=("Segoe UI", 9, "bold"),
+                                  relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
+                                  overrelief="ridge")
         self.bill_btn.pack(side="left", padx=(0, 6))
         tk.Button(btn_row, text="\U0001f504  Reset", command=self._reset_bill_form,
-                  bg="#546e7a", fg="white", font=("Segoe UI", 9, "bold"),
-                  relief="raised", cursor="hand2", padx=10, pady=5, bd=1, overrelief="ridge").pack(side="left")
+                  bg="#64748b", fg="white", font=("Segoe UI", 9, "bold"),
+                  relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
+                  overrelief="ridge").pack(side="left")
 
     def _on_factory_select(self, _=None) -> None:
         name = self.f_factory_name.get()
         for f in self.factories:
             if f["name"] == name:
                 self.f_factory_id.set(f["id"])
+                self._refresh_header_summary()
                 return
 
     def _on_bill_factory_select(self, _=None) -> None:
@@ -561,6 +637,7 @@ class FactoryLocalClient:
         for f in self.factories:
             if f["name"] == name:
                 self.b_factory_id.set(f["id"])
+                self._refresh_header_summary()
                 return
 
     def _browse_bill(self) -> None:
@@ -615,8 +692,10 @@ class FactoryLocalClient:
             self._set_conn(True)
             self.f_requested_by.set(self.username.get())
             self.status_text.set("Logged in successfully")
+            self._collapse_login_bar()
             self._load_masters()
             self.sync_from_server(silent=True)
+            self._refresh_header_summary()
             messagebox.showinfo("Login", "Logged in successfully.")
         except Exception as exc:
             self._set_conn(False)
@@ -631,9 +710,7 @@ class FactoryLocalClient:
 
     def _set_conn(self, online: bool) -> None:
         self.conn_text.set("Online" if online else "Offline")
-        color = "#00e676" if online else "#dc3545"
-        if hasattr(self, "_conn_dot"):
-            self._conn_dot.config(fg=color)
+        self._header_status_var.set(f"Status: {self.conn_text.get()}")
 
     def _load_masters(self) -> None:
         base = DEFAULT_BASE_URL.rstrip("/")
@@ -667,6 +744,7 @@ class FactoryLocalClient:
                 self._on_factory_select()
                 self.b_factory_name.set(fnames[0])
                 self._on_bill_factory_select()
+        self._refresh_header_summary()
 
     def sync_from_server(self, silent: bool = False) -> None:
         base = DEFAULT_BASE_URL.rstrip("/")
@@ -681,7 +759,9 @@ class FactoryLocalClient:
             self._save_to_db(items)
             self._load_my_requests_from_cache()
             self._set_conn(True)
-            self.status_text.set(f"Synced {len(items)} records at {datetime.now().strftime('%H:%M:%S')}")
+            self._last_sync_text = datetime.now().strftime('%H:%M:%S')
+            self.status_text.set(f"Synced {len(items)} records at {self._last_sync_text}")
+            self._refresh_header_summary()
         except Exception as exc:
             self._set_conn(False)
             if not silent:
@@ -734,6 +814,7 @@ class FactoryLocalClient:
 
     def _load_my_requests_from_cache(self) -> None:
         self.bill_paths.clear()
+        self._row_tags.clear()
         for row in self.tree.get_children():
             self.tree.delete(row)
 
@@ -748,6 +829,22 @@ class FactoryLocalClient:
                        vendor_bill_path, company_voucher_path
                 FROM my_requests ORDER BY id DESC
             """).fetchall()
+
+        approved_count = 0
+        awaiting_count = 0
+        submitted_count = 0
+        pending_count = 0
+        for r_all in rows:
+            st = normalize_approval_status(r_all[5])
+            comp = r_all[6] or "Pending"
+            if st == "Approved":
+                approved_count += 1
+            if comp == "Awaiting Completion":
+                awaiting_count += 1
+            if comp == "Completion Submitted":
+                submitted_count += 1
+            if st in ("Pending", "Draft"):
+                pending_count += 1
 
         for r in rows:
             req_id = int(r[0])
@@ -787,6 +884,19 @@ class FactoryLocalClient:
 
         if status_changed:
             self._notify_status_changes(status_changed)
+
+        if hasattr(self, "_dash_pending_var"):
+            self._dash_pending_var.set(str(approved_count))
+            self._dash_awaiting_var.set(str(pending_count))
+            self._dash_submitted_var.set(str(submitted_count))
+            self._dash_updates_var.set(str(awaiting_count))
+            if awaiting_count > 0:
+                self._dash_note_var.set(f"{awaiting_count} request(s) waiting for completion proof")
+            elif pending_count > 0:
+                self._dash_note_var.set(f"{pending_count} request(s) pending approval")
+            else:
+                self._dash_note_var.set("No pending operational alerts")
+            self._refresh_header_summary()
 
         badge = len(status_changed)
         label = "Create Request" + (f" ({badge} updates)" if badge else "")

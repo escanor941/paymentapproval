@@ -132,32 +132,32 @@ class AdminLocalClient:
         self.schedule_auto_sync()
 
     def _apply_theme(self) -> None:
-        BG      = "#e7edf8"   # main content background (matches _MAIN_BG)
-        PRIMARY = "#0b2247"   # sidebar / header navy
-        ACCENT  = "#00a3b8"   # accent cyan
+        BG      = "#f3f5f7"   # main content background (matches _MAIN_BG)
+        PRIMARY = "#1f6fbe"   # header blue
+        ACCENT  = "#2b82d9"   # accent blue
         WHITE   = "#ffffff"
         style = ttk.Style(self.root)
         style.theme_use("clam")
         self.root.configure(bg=BG)
         style.configure(".",                background=BG, font=("Segoe UI", 10))
         style.configure("TFrame",           background=BG)
-        style.configure("TLabel",           background=BG, font=("Segoe UI", 10))
+        style.configure("TLabel",           background=BG, foreground="#1f2937", font=("Segoe UI", 10))
         style.configure("TLabelframe",      background=BG)
-        style.configure("TLabelframe.Label",background=BG, font=("Segoe UI", 10, "bold"), foreground=PRIMARY)
-        style.configure("Treeview",         background=WHITE, fieldbackground=WHITE,
-                        font=("Segoe UI", 10), rowheight=30)
+        style.configure("TLabelframe.Label",background=BG, font=("Segoe UI", 10, "bold"), foreground="#1f2937")
+        style.configure("Treeview",         background="#ffffff", fieldbackground="#ffffff",
+            foreground="#111827", font=("Segoe UI", 10), rowheight=30)
         style.configure("Treeview.Heading", background=PRIMARY, foreground=WHITE,
-                font=("Segoe UI", 10, "bold"), relief="raised", padding=(7, 7), borderwidth=1)
+            font=("Segoe UI", 10, "bold"), relief="flat", padding=(7, 7), borderwidth=0)
         style.map("Treeview",
-              background=[("selected", "#155e75")],
+              background=[("selected", "#2b82d9")],
               foreground=[("selected", WHITE)])
-        style.configure("TEntry",           fieldbackground=WHITE, font=("Segoe UI", 10), padding=5)
-        style.configure("TCombobox",        fieldbackground=WHITE, font=("Segoe UI", 10))
-        style.configure("TCheckbutton",     background="#071b3a", foreground="#9dd8ff",
+        style.configure("TEntry",           fieldbackground="#ffffff", foreground="#111827", font=("Segoe UI", 10), padding=5)
+        style.configure("TCombobox",        fieldbackground="#ffffff", foreground="#111827", font=("Segoe UI", 10))
+        style.configure("TCheckbutton",     background=BG, foreground="#334155",
                         font=("Segoe UI", 9))
-        style.configure("TScrollbar",       background="#b5c8de", troughcolor="#dde7f5", relief="raised")
+        style.configure("TScrollbar",       background="#d1d5db", troughcolor="#eef2f7", relief="flat")
         style.configure("TButton",          background=PRIMARY, foreground=WHITE,
-                font=("Segoe UI", 10, "bold"), padding=(10, 6), relief="raised", borderwidth=1)
+            font=("Segoe UI", 10, "bold"), padding=(10, 6), relief="flat", borderwidth=0)
         style.map("TButton",
               background=[("active", ACCENT)],
                   foreground=[("active", WHITE)])
@@ -184,14 +184,14 @@ class AdminLocalClient:
     # ─────────────────────────────────────────────────────────────────────────
     # DESIGN CONSTANTS
     # ─────────────────────────────────────────────────────────────────────────
-    _S_BG     = "#0b2247"   # sidebar navy
-    _S_HOVER  = "#12346b"   # sidebar hover
-    _S_ACTIVE = "#0ea5b7"   # sidebar active
-    _S_TEXT   = "#d6ecff"   # sidebar nav text
-    _MAIN_BG  = "#e7edf8"   # main content background
+    _S_BG     = "#ffffff"   # sidebar background
+    _S_HOVER  = "#eff6ff"   # sidebar hover
+    _S_ACTIVE = "#dbeafe"   # sidebar active
+    _S_TEXT   = "#334155"   # sidebar nav text
+    _MAIN_BG  = "#f3f5f7"   # main content background
     _CARD_BG  = "#ffffff"   # card background
-    _HDR_BG   = "#0b2247"   # top header (matches sidebar)
-    _BORDER   = "#c8d6ea"   # card/panel border
+    _HDR_BG   = "#1f6fbe"   # top header
+    _BORDER   = "#d9e0e8"   # card/panel border
 
     def _build_ui(self) -> None:
         S_BG    = self._S_BG
@@ -204,12 +204,12 @@ class AdminLocalClient:
         BORDER  = self._BORDER
 
         # ── Footer (packed first so it stays at very bottom) ──────────────
-        footer = tk.Frame(self.root, bg="#071b3a", height=24)
+        footer = tk.Frame(self.root, bg="#f3f5f7", height=24)
         footer.pack(side="bottom", fill="x")
         footer.pack_propagate(False)
         tk.Label(footer,
                  text="EMD Group  ·  Purchase Approval System  ·  Created by Daniyal  ·  © 2026",
-                 bg="#071b3a", fg="#76a5c8", font=("Segoe UI", 8)).pack(side="right", padx=14)
+                 bg="#f3f5f7", fg="#64748b", font=("Segoe UI", 8)).pack(side="right", padx=14)
 
         # ── Outer wrapper: sidebar | main ─────────────────────────────────
         outer = tk.Frame(self.root, bg=MAIN_BG)
@@ -223,10 +223,10 @@ class AdminLocalClient:
         sidebar.pack_propagate(False)
 
         # ── Logo pane ─────────────────────────────────────────────────────
-        logo_pane = tk.Frame(sidebar, bg="#071b3a", height=78)
+        logo_pane = tk.Frame(sidebar, bg="#1f6fbe", height=78)
         logo_pane.pack(fill="x")
         logo_pane.pack_propagate(False)
-        logo_c = tk.Canvas(logo_pane, width=238, height=78, bg="#071b3a", highlightthickness=0)
+        logo_c = tk.Canvas(logo_pane, width=238, height=78, bg="#1f6fbe", highlightthickness=0)
         logo_c.pack()
         logo_c.create_rectangle(0, 0, 238, 6, fill="#c8102e", outline="")
         logo_c.create_text(119, 35, text="EMD", fill="#ffffff",
@@ -240,7 +240,7 @@ class AdminLocalClient:
                            fill="white", font=("Segoe UI", 7), anchor="center")
 
         # ── Nav menu ──────────────────────────────────────────────────────
-        tk.Frame(sidebar, bg="#1e3f6e", height=1).pack(fill="x")
+        tk.Frame(sidebar, bg="#d9e0e8", height=1).pack(fill="x")
         nav_pane = tk.Frame(sidebar, bg=S_BG)
         nav_pane.pack(fill="both", expand=True, pady=(6, 0))
 
@@ -275,12 +275,12 @@ class AdminLocalClient:
             self._nav_btns[page_id] = b
 
         # ── Sidebar footer: credentials + connection ───────────────────────
-        tk.Frame(sidebar, bg="#1e3f6e", height=1).pack(side="bottom", fill="x")
-        sb_foot = tk.Frame(sidebar, bg="#071b3a")
+        tk.Frame(sidebar, bg="#d9e0e8", height=1).pack(side="bottom", fill="x")
+        sb_foot = tk.Frame(sidebar, bg="#ffffff")
         sb_foot.pack(side="bottom", fill="x", padx=12, pady=8)
 
         def _slbl(t):
-            return tk.Label(sb_foot, text=t, bg="#071b3a", fg="#7fa7c7",
+            return tk.Label(sb_foot, text=t, bg="#ffffff", fg="#64748b",
                             font=("Segoe UI", 7, "bold"))
 
         _slbl("USERNAME").grid(row=0, column=0, sticky="w", pady=(0, 1))
@@ -290,12 +290,12 @@ class AdminLocalClient:
         ttk.Checkbutton(sb_foot, text="Auto Sync",
                         variable=self.auto_sync_enabled).grid(row=2, column=0, columnspan=2,
                                                               sticky="w", pady=(4, 0))
-        conn_row = tk.Frame(sb_foot, bg="#071b3a")
+        conn_row = tk.Frame(sb_foot, bg="#ffffff")
         conn_row.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        self._conn_dot = tk.Label(conn_row, text="●", bg="#071b3a", fg="#dc3545",
+        self._conn_dot = tk.Label(conn_row, text="●", bg="#ffffff", fg="#dc3545",
                                   font=("Segoe UI", 13))
         self._conn_dot.pack(side="left")
-        tk.Label(conn_row, textvariable=self.conn_text, bg="#071b3a", fg="#9dd8ff",
+        tk.Label(conn_row, textvariable=self.conn_text, bg="#ffffff", fg="#334155",
                  font=("Segoe UI", 9, "bold")).pack(side="left", padx=4)
 
         # ══════════════════════════════════════════════════════════════════
@@ -308,7 +308,7 @@ class AdminLocalClient:
         hdr = tk.Frame(main_area, bg=HDR_BG, height=58)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
-        tk.Frame(main_area, bg="#9fb5cf", height=2).pack(fill="x", padx=6, pady=(0, 8))
+        tk.Frame(main_area, bg="#d9e0e8", height=1).pack(fill="x", padx=6, pady=(0, 8))
 
         self._page_title_var = tk.StringVar(value="Purchase Requests")
         tk.Label(hdr, textvariable=self._page_title_var,
@@ -321,14 +321,14 @@ class AdminLocalClient:
 
         # Status chip
         tk.Label(right_hdr, textvariable=self.status_text,
-                 bg="#12346b", fg="#d6ecff",
+             bg="#2b82d9", fg="#ffffff",
                  font=("Segoe UI", 8), padx=8, pady=4).pack(side="right", padx=(6, 0))
 
         # Login button in header
-        def _hbtn(parent, text, cmd, bg="#163d7a", hov="#1e5faa"):
+        def _hbtn(parent, text, cmd, bg="#1f6fbe", hov="#2b82d9"):
             b = tk.Button(parent, text=text, command=cmd, bg=bg, fg="#ffffff",
-                          font=("Segoe UI", 9, "bold"), relief="raised", cursor="hand2",
-                          padx=11, pady=4, bd=1, overrelief="ridge",
+                          font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
+                          padx=11, pady=4, bd=0, overrelief="ridge",
                           activebackground=hov, activeforeground="white")
             b.bind("<Enter>", lambda e: b.config(bg=hov))
             b.bind("<Leave>", lambda e: b.config(bg=bg))
@@ -337,21 +337,21 @@ class AdminLocalClient:
         _hbtn(right_hdr, "\U0001f510 Login", self.login).pack(side="right", padx=3)
 
         # Search bar
-        srch_frame = tk.Frame(right_hdr, bg="#163d7a")
+        srch_frame = tk.Frame(right_hdr, bg="#e2e8f0")
         srch_frame.pack(side="right", padx=(0, 6))
         self._search_var = tk.StringVar()
         self._search_var.trace_add("write", lambda *_: self._apply_search_filter())
         srch = tk.Entry(srch_frame, textvariable=self._search_var,
-                        bg="#1a4a80", fg="#bfdbfe", insertbackground="#bfdbfe",
+                        bg="#ffffff", fg="#334155", insertbackground="#334155",
                         font=("Segoe UI", 9), relief="flat", width=28,
-                        highlightthickness=1, highlightbackground="#2a5c9a",
-                        highlightcolor="#5b8fd4")
+                        highlightthickness=1, highlightbackground="#cfd8e3",
+                        highlightcolor="#cfd8e3")
         srch.pack(ipady=5, padx=4)
         _PLACEHOLDER = "\U0001f50d  Search vendor / item / ID..."
         srch.insert(0, _PLACEHOLDER)
-        srch.bind("<FocusIn>",  lambda e: (srch.delete(0, "end"), srch.config(fg="white"))
+        srch.bind("<FocusIn>",  lambda e: (srch.delete(0, "end"), srch.config(fg="#111827"))
                                            if srch.get() == _PLACEHOLDER else None)
-        srch.bind("<FocusOut>", lambda e: (srch.config(fg="#bfdbfe"),
+        srch.bind("<FocusOut>", lambda e: (srch.config(fg="#64748b"),
                                             srch.insert(0, _PLACEHOLDER),
                                             self._search_var.set(""))
                                            if not srch.get().strip() else None)
@@ -369,20 +369,20 @@ class AdminLocalClient:
         kpi_strip.pack(fill="x", padx=14, pady=(12, 4))
 
         kpi_defs = [
-            ("\U0001f4e6 Total",    self._stats_var_total,    "#e8f0fe", "#1d4ed8"),
-            ("\u23f3 Pending",  self._stats_var_pending,  "#fff7ed", "#c2410c"),
-            ("\u2705 Approved", self._stats_var_approved, "#f0fdf4", "#15803d"),
-            ("\u274c Rejected", self._stats_var_rejected, "#fff1f2", "#be123c"),
-            ("\u23f3 Partial Approved", self._stats_var_hold,     "#fff3cd", "#856404"),
-            ("\U0001f9fe Pending Completion", self._stats_var_pending_completion, "#ecfeff", "#0e7490"),
-            ("\u20b9 Amount",   self._stats_var_amount,   "#f0f9ff", "#0369a1"),
+            ("\U0001f4e6 Total",    self._stats_var_total,    "#eff6ff", "#1f6fbe"),
+            ("\u23f3 Pending",  self._stats_var_pending,  "#fff7ed", "#ea580c"),
+            ("\u2705 Approved", self._stats_var_approved, "#ecfdf3", "#15803d"),
+            ("\u274c Rejected", self._stats_var_rejected, "#fff1f2", "#dc2626"),
+            ("\u23f3 Partial Approved", self._stats_var_hold,     "#fefce8", "#ca8a04"),
+            ("\U0001f9fe Pending Completion", self._stats_var_pending_completion, "#eff6ff", "#1f6fbe"),
+            ("\u20b9 Amount",   self._stats_var_amount,   "#f8fafc", "#0f172a"),
         ]
         for label, var, card_bg, val_fg in kpi_defs:
-            card = tk.Frame(kpi_strip, bg=card_bg, padx=16, pady=10,
-                            highlightthickness=1, highlightbackground="#b7c9df",
-                            highlightcolor="#9fb3cc", relief="raised", bd=1)
+            card = tk.Frame(kpi_strip, bg=card_bg, padx=14, pady=8,
+                            highlightthickness=1, highlightbackground="#d6dee8",
+                            highlightcolor="#d6dee8", relief="flat", bd=0)
             card.pack(side="left", fill="x", expand=True, padx=4)
-            tk.Label(card, text=label, bg=card_bg, fg="#64748b",
+            tk.Label(card, text=label, bg=card_bg, fg="#475569",
                      font=("Segoe UI", 8, "bold")).pack(anchor="w")
             tk.Label(card, textvariable=var, bg=card_bg, fg=val_fg,
                      font=("Segoe UI", 18, "bold")).pack(anchor="w", pady=(2, 0))
@@ -521,12 +521,12 @@ class AdminLocalClient:
         tree_card.pack(fill="both", expand=True)
 
         self.tree = ttk.Treeview(tree_card, columns=cols, show="headings")
-        self.tree.tag_configure("new_request",     background="#ffe4e4", foreground="#b91c1c")
-        self.tree.tag_configure("status_approved", background="#f0fdf4", foreground="#15803d")
-        self.tree.tag_configure("status_rejected", background="#fff1f2", foreground="#be123c")
-        self.tree.tag_configure("status_pending",  background="#fff7ed", foreground="#c2410c")
-        self.tree.tag_configure("status_hold",     background="#fff3cd", foreground="#856404")
-        self.tree.tag_configure("status_draft",    background="#f8fafc", foreground="#475569")
+        self.tree.tag_configure("new_request",     background="#eff6ff", foreground="#1f6fbe")
+        self.tree.tag_configure("status_approved", background="#ecfdf3", foreground="#15803d")
+        self.tree.tag_configure("status_rejected", background="#fff1f2", foreground="#dc2626")
+        self.tree.tag_configure("status_pending",  background="#fff7ed", foreground="#ea580c")
+        self.tree.tag_configure("status_hold",     background="#fefce8", foreground="#ca8a04")
+        self.tree.tag_configure("status_draft",    background="#f8fafc", foreground="#64748b")
 
         col_hdrs = {
             "id": "ID", "request_date": "Date", "factory_id": "Factory",
@@ -571,7 +571,7 @@ class AdminLocalClient:
         bill_card.pack(fill="both", expand=True)
 
         self.bill_tree = ttk.Treeview(bill_card, columns=bill_cols, show="headings")
-        self.bill_tree.tag_configure("new_bill", background="#ffe4e4", foreground="#b91c1c")
+        self.bill_tree.tag_configure("new_bill", background="#fff1f2", foreground="#dc2626")
         bill_hdrs = {"id": "ID", "request_date": "Date", "factory_id": "Factory",
                      "vendor": "Vendor", "requested_by": "Uploaded By",
                      "approval_status": "Status", "updated_at": "Updated At"}
