@@ -1174,9 +1174,10 @@ def reject_request(
         logger.exception("Failed to collect rejection Telegram data for request %s", req.id)
         tg_data = None
     db.commit()
+    telegram_sent = True
     if tg_data:
         try:
-            telegram_request_rejected(
+            telegram_sent = telegram_request_rejected(
                 req_id=tg_data["req_id"],
                 factory_name=tg_data["factory_name"],
                 item_name=tg_data["item_name"],
@@ -1186,7 +1187,9 @@ def reject_request(
             )
         except Exception:
             logger.exception("Exception sending rejection Telegram for request %s", req.id)
-    return {"message": "Rejected"}
+            telegram_sent = False
+    message = "Rejected" if telegram_sent else "Rejected, but Telegram notification failed"
+    return {"message": message}
 
 
 @router.get("/requests/{request_id}/payment-summary")
@@ -1286,6 +1289,12 @@ def partial_approve_request(
     req.approved_at = req.approved_at or datetime.utcnow()
     req.is_unread_admin = False
 
+    try:
+        tg_data = _collect_approval_telegram_data(db, req, user)
+    except Exception:
+        logger.exception("Failed to collect partial-approve Telegram data for request %s", req.id)
+        tg_data = None
+
     log_change(
         db,
         entity="purchase_request",
@@ -1297,8 +1306,37 @@ def partial_approve_request(
     )
     db.commit()
 
+    telegram_sent = True
+    if tg_data:
+        try:
+            if balance <= 0.001:
+                telegram_sent = telegram_request_approved(
+                    req_id=tg_data["req_id"],
+                    factory_name=tg_data["factory_name"],
+                    item_name=tg_data["item_name"],
+                    vendor=tg_data["vendor"],
+                    approved_amount=tg_data["approved_amount"],
+                    approved_by=tg_data["approved_by"],
+                )
+            else:
+                telegram_sent = telegram_request_hold(
+                    req_id=tg_data["req_id"],
+                    factory_name=tg_data["factory_name"],
+                    item_name=tg_data["item_name"],
+                    vendor=tg_data["vendor"],
+                    remarks=remarks or f"Partial payment: INR {paid_amount:.2f}",
+                    held_by=tg_data["approved_by"],
+                )
+        except Exception:
+            logger.exception("Exception sending partial-approve Telegram for request %s", req.id)
+            telegram_sent = False
+
+    message = "Partial payment recorded" if balance > 0 else "Fully paid - moved to Approved"
+    if not telegram_sent:
+        message = f"{message}, but Telegram notification failed"
+
     return {
-        "message": "Partial payment recorded" if balance > 0 else "Fully paid — moved to Approved",
+        "message": message,
         "total_paid": new_total_paid,
         "balance": balance,
         "approval_status": req.approval_status,

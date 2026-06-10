@@ -4,6 +4,7 @@ import sqlite3
 import io
 import re
 import threading
+import traceback
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin
@@ -11,7 +12,39 @@ import webbrowser
 
 import requests
 
-from glass_blue_erp_theme import apply_glass_blue_erp_theme, GlassColors, GlassStyles
+try:
+    from glass_blue_erp_theme import apply_glass_blue_erp_theme, GlassColors, GlassStyles
+    THEME_IMPORT_ERROR = None
+except Exception as exc:
+    THEME_IMPORT_ERROR = exc
+
+    def apply_glass_blue_erp_theme(app) -> None:
+        return None
+
+    class _GlassColorMeta(type):
+        def __getattr__(cls, _name):
+            return "#2B3A4A"
+
+    class GlassColors(metaclass=_GlassColorMeta):
+        TEXT_PRIMARY = "#FFFFFF"
+        TEXT_SECONDARY = "#D6DEE8"
+        TEXT_MUTED = "#A0AEC0"
+        BORDER_COLOR = "#3C4B5A"
+        PRIMARY_DARK = "#1F2A36"
+        PRIMARY_LIGHT = "#2B3A4A"
+        PRIMARY_ACCENT = "#4A90E2"
+
+    class _GlassStyleMeta(type):
+        def __getattr__(cls, _name):
+            def _style_fallback(*_args, **_kwargs):
+                return ""
+
+            return _style_fallback
+
+    class GlassStyles(metaclass=_GlassStyleMeta):
+        pass
+
+    print(f"[admin_panel_pyside6] Theme import failed: {exc}", file=sys.stderr, flush=True)
 
 try:
     from openpyxl import Workbook
@@ -45,19 +78,37 @@ APP_NAME = "EMDAdminPanel"
 DEFAULT_BASE_URL = "https://paymentapproval.onrender.com"
 
 
+def _report_runtime_exception(title: str, exc_type, exc_value, exc_traceback) -> None:
+    if exc_type is SystemExit:
+        raise exc_value
+    details = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    print(details, file=sys.stderr, flush=True)
+    app = QApplication.instance()
+    if app is not None:
+        QMessageBox.critical(None, title, f"{exc_value}\n\nSee terminal output for details.")
+
+
+def _threading_excepthook(args) -> None:
+    _report_runtime_exception("Admin Panel Background Error", args.exc_type, args.exc_value, args.exc_traceback)
+
+
 class BillFetchThread(QThread):
     """Fetch bill bytes in the background; render only on the Qt UI thread."""
 
     loaded = Signal(int, bytes, str, str)
     failed = Signal(int, str)
 
-    def __init__(self, panel: "AdminPanelPySide6", req_id: int) -> None:
-        super().__init__(panel)
+    def __init__(self, panel: "AdminPanelPySide6", req_id: int, parent=None) -> None:
+        super().__init__(parent or panel)
         self.panel = panel
         self.req_id = req_id
 
     def run(self) -> None:
+        if self.isInterruptionRequested():
+            return
         resp, filename, err = self.panel._fetch_bill_response(self.req_id, stream=False)
+        if self.isInterruptionRequested():
+            return
         if err or resp is None:
             self.failed.emit(self.req_id, err or "No bill attached or failed to load.")
             return
@@ -66,6 +117,8 @@ class BillFetchThread(QThread):
             content_type = resp.headers.get("Content-Type", "")
         except Exception as exc:
             self.failed.emit(self.req_id, f"Failed to read bill file: {exc}")
+            return
+        if self.isInterruptionRequested():
             return
         self.loaded.emit(self.req_id, content, filename, content_type)
 
@@ -186,7 +239,11 @@ class AdminPanelPySide6(QMainWindow):
         self._pdf_current_page: int = 0
         self._pdf_content: bytes = b""
         self._pdf_page_count: int = 0
+        self._preview_source_pixmap: QPixmap | None = None
+        self._preview_summary_visible: bool = False
+        self._open_bill_in_window_for_req: int | None = None
         self._bill_loader: BillFetchThread | None = None
+        self._payment_summary_loader: PaymentSummaryThread | None = None
         
         # Build UI
         self._build_ui()
@@ -934,6 +991,16 @@ class AdminPanelPySide6(QMainWindow):
         download_btn.setStyleSheet(GlassStyles.button_secondary_style())
         download_btn.clicked.connect(self.download_bill_selected)
         top_layout.addWidget(download_btn)
+
+        self.preview_summary_toggle_btn = QPushButton("Show Summary")
+        self.preview_summary_toggle_btn.setStyleSheet(GlassStyles.button_secondary_style())
+        self.preview_summary_toggle_btn.clicked.connect(self._toggle_preview_summary)
+        top_layout.addWidget(self.preview_summary_toggle_btn)
+
+        full_view_btn = QPushButton("Full View")
+        full_view_btn.setStyleSheet(GlassStyles.button_secondary_style())
+        full_view_btn.clicked.connect(self._open_full_bill_view)
+        top_layout.addWidget(full_view_btn)
         
         layout.addWidget(top_bar)
         
@@ -951,6 +1018,8 @@ class AdminPanelPySide6(QMainWindow):
         self.summary_content.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-size: 10px;")
         self.summary_content.setWordWrap(True)
         summary_layout.addWidget(self.summary_content)
+        self.summary_card.setMaximumHeight(140)
+        self.summary_card.setVisible(self._preview_summary_visible)
         
         layout.addWidget(self.summary_card)
         
@@ -960,12 +1029,14 @@ class AdminPanelPySide6(QMainWindow):
         preview_layout.setContentsMargins(0, 0, 0, 0)
         
         self.preview_scroll = QScrollArea()
-        self.preview_scroll.setWidgetResizable(True)
+        self.preview_scroll.setWidgetResizable(False)
         self.preview_scroll.setStyleSheet(f"background-color: {GlassColors.GLASS_BG}; border: none;")
+        self.preview_scroll.viewport().installEventFilter(self)
         
         self.preview_label = QLabel()
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setStyleSheet(f"background-color: {GlassColors.GLASS_BG};")
+        self.preview_label.setMinimumSize(800, 1100)
         self.preview_scroll.setWidget(self.preview_label)
         
         preview_layout.addWidget(self.preview_scroll)
@@ -1573,14 +1644,25 @@ class AdminPanelPySide6(QMainWindow):
     
     def selected_request_id_any(self) -> int | None:
         """Get selected request ID from either table."""
+        def _id_from_table(table: QTableWidget) -> int | None:
+            selected_rows = table.selectionModel().selectedRows() if table.selectionModel() else []
+            if selected_rows:
+                row = selected_rows[0].row()
+                item = table.item(row, 0)
+                if item is not None:
+                    return int(item.text())
+            current_row = table.currentRow()
+            if current_row >= 0 and table.hasFocus():
+                item = table.item(current_row, 0)
+                if item is not None:
+                    return int(item.text())
+            return None
+
         req_id = None
-        current_row = self.requests_table.currentRow()
-        if current_row >= 0:
-            req_id = int(self.requests_table.item(current_row, 0).text())
+        if self._active_page == "bills":
+            req_id = _id_from_table(self.bills_table) or _id_from_table(self.requests_table)
         else:
-            current_row = self.bills_table.currentRow()
-            if current_row >= 0:
-                req_id = int(self.bills_table.item(current_row, 0).text())
+            req_id = _id_from_table(self.requests_table) or _id_from_table(self.bills_table)
         
         if req_id is None and self.preview_req_id is not None:
             req_id = self.preview_req_id
@@ -1594,22 +1676,126 @@ class AdminPanelPySide6(QMainWindow):
     
     def _on_table_double_click(self, item: QTableWidgetItem) -> None:
         """Handle table double-click."""
-        row = item.row()
-        req_id = int(self.requests_table.item(row, 0).text())
-        self.open_request_detail_window(req_id)
+        try:
+            row = item.row()
+            if row < 0:
+                return
+            id_item = self.requests_table.item(row, 0)
+            if id_item is None:
+                return
+            req_id = int(id_item.text())
+            self.open_request_detail_window(req_id)
+        except Exception as exc:
+            traceback.print_exc()
+            QMessageBox.critical(self, "Request Summary", f"Failed to open request summary: {exc}")
     
     def _on_bills_table_double_click(self, item: QTableWidgetItem) -> None:
         """Handle bills table double-click to view bill preview."""
         row = item.row()
         req_id = int(self.bills_table.item(row, 0).text())
-        self.view_bill_selected()
+        self.bills_table.clearSelection()
+        self.bills_table.selectRow(row)
+        self._view_bill_for_request(req_id)
     
     def approve_selected(self) -> None:
         """Approve selected request."""
         req_id = self.selected_request_id()
         if req_id is None:
             return
-        self.open_partial_approve_dialog(req_id)
+        self.open_approve_dialog(req_id)
+
+    def open_approve_dialog(self, req_id: int) -> None:
+        """Open approve dialog with amount and remarks."""
+        req_data = {}
+        for item in self._last_server_items:
+            if item.get("id") == req_id:
+                req_data = item
+                break
+
+        def as_money(v) -> float:
+            try:
+                return float(v or 0)
+            except Exception:
+                return 0.0
+
+        default_amount = as_money(
+            req_data.get("approved_amount") or req_data.get("final_amount") or req_data.get("amount")
+        )
+        if default_amount <= 0:
+            default_amount = as_money(req_data.get("total_amount"))
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Approve Request - #{req_id}")
+        dialog.resize(460, 290)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
+
+        amount_label = QLabel("Approved Amount (INR) *")
+        amount_label.setStyleSheet("color: #334155; font-weight: bold; font-size: 10px;")
+        layout.addWidget(amount_label)
+
+        amount_input = QLineEdit(f"{default_amount:.2f}" if default_amount > 0 else "")
+        amount_input.setStyleSheet("padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 11px;")
+        layout.addWidget(amount_input)
+
+        remarks_label = QLabel("Remarks (optional)")
+        remarks_label.setStyleSheet("color: #334155; font-weight: bold; font-size: 10px;")
+        layout.addWidget(remarks_label)
+
+        remarks_input = QTextEdit()
+        remarks_input.setMaximumHeight(80)
+        remarks_input.setStyleSheet("padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;")
+        layout.addWidget(remarks_input)
+
+        status_label = QLabel("")
+        status_label.setWordWrap(True)
+        status_label.setStyleSheet("color: #64748b; font-size: 10px;")
+        layout.addWidget(status_label)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_btn)
+
+        submit_btn = QPushButton("Approve")
+        submit_btn.setStyleSheet("background-color: #15803d; color: white; font-weight: bold; padding: 8px 16px; border: none; border-radius: 4px;")
+        button_layout.addWidget(submit_btn)
+
+        layout.addLayout(button_layout)
+
+        def on_submit():
+            amount_str = amount_input.text().strip()
+            if not amount_str:
+                status_label.setText("Approved amount is required.")
+                status_label.setStyleSheet("color: #b02a37;")
+                return
+            try:
+                amount = float(amount_str)
+                if amount <= 0:
+                    raise ValueError
+            except ValueError:
+                status_label.setText("Approved amount must be a positive number.")
+                status_label.setStyleSheet("color: #b02a37;")
+                return
+
+            payload = {"approved_amount": f"{amount:.2f}"}
+            remarks = remarks_input.toPlainText().strip()
+            if remarks:
+                payload["remarks"] = remarks
+
+            success, message = self._perform_action(f"/requests/{req_id}/approve", payload)
+            status_label.setText(message)
+            status_label.setStyleSheet("color: #1f8a43;" if success else "color: #b02a37;")
+            if success:
+                self.sync_from_server(silent=True)
+                QTimer.singleShot(900, dialog.accept)
+
+        submit_btn.clicked.connect(on_submit)
+        dialog.exec()
     
     def reject_selected(self) -> None:
         """Reject selected request."""
@@ -1621,6 +1807,7 @@ class AdminPanelPySide6(QMainWindow):
             req_id=req_id,
             path_template="/requests/{req_id}/reject",
             field_name="reason",
+            alias_field_names=("rejection_reason", "remarks", "comment"),
             field_label="Rejection Reason",
             submit_text="Reject",
             required=True,
@@ -1700,6 +1887,10 @@ class AdminPanelPySide6(QMainWindow):
         req_id = self.selected_request_id_any()
         if req_id is None:
             return
+        self._view_bill_for_request(req_id, open_in_window=True)
+
+    def _view_bill_for_request(self, req_id: int, open_in_window: bool = False) -> None:
+        """View bill for a specific request ID."""
         path = (self.bill_paths.get(req_id) or "").strip()
         if not path:
             QMessageBox.information(self, "Bill", "No bill file attached for this request.")
@@ -1708,7 +1899,11 @@ class AdminPanelPySide6(QMainWindow):
         if req_id == self.preview_req_id and self.preview_label.pixmap() is not None:
             self.preview_status.setText(f"Previewing request #{req_id} - {self.preview_filename}")
             self._switch_page("preview")
+            if open_in_window:
+                self._open_full_bill_view()
             return
+
+        self._open_bill_in_window_for_req = req_id if open_in_window else None
 
         self.preview_req_id = req_id
         self.preview_filename = ""
@@ -1737,21 +1932,36 @@ class AdminPanelPySide6(QMainWindow):
         self.preview_filename = filename
         self._render_bill_preview(content, filename, content_type)
         self.preview_status.setText(f"Previewing request #{req_id} - {self.preview_filename}")
+        if self._open_bill_in_window_for_req == req_id:
+            self._open_bill_in_window_for_req = None
+            self._open_full_bill_view()
 
     def _on_bill_failed(self, req_id: int, err: str) -> None:
         """Show bill loading errors on the UI thread."""
         if req_id != self.preview_req_id:
             return
+        if self._open_bill_in_window_for_req == req_id:
+            self._open_bill_in_window_for_req = None
         self.preview_status.setText(err)
         self._show_preview_message(err)
         QMessageBox.critical(self, "Bill Error", err)
     
     def _load_payment_summary(self, req_id: int) -> None:
         """Load payment summary for the request."""
-        loader = PaymentSummaryThread(self, req_id)
-        loader.loaded.connect(self._on_payment_summary_loaded)
-        loader.failed.connect(self._on_payment_summary_failed)
-        loader.start()
+        # Keep a strong reference to avoid QThread being destroyed while running.
+        if self._payment_summary_loader and self._payment_summary_loader.isRunning():
+            self._payment_summary_loader.requestInterruption()
+            self._payment_summary_loader.wait(500)
+
+        self._payment_summary_loader = PaymentSummaryThread(self, req_id)
+        self._payment_summary_loader.loaded.connect(self._on_payment_summary_loaded)
+        self._payment_summary_loader.failed.connect(self._on_payment_summary_failed)
+        self._payment_summary_loader.finished.connect(self._on_payment_summary_finished)
+        self._payment_summary_loader.start()
+
+    def _on_payment_summary_finished(self) -> None:
+        """Release summary loader reference after completion."""
+        self._payment_summary_loader = None
     
     def _on_payment_summary_loaded(self, req_id: int, summary_data: object) -> None:
         """Display loaded payment summary."""
@@ -1789,36 +1999,35 @@ class AdminPanelPySide6(QMainWindow):
         if not path:
             QMessageBox.information(self, "Bill", "No bill file attached for this request.")
             return
-
-        resp, filename, err = self._fetch_bill_response(req_id, stream=True)
-        if err:
-            QMessageBox.critical(self, "Download Bill", err)
-            return
-
-        ext = Path(filename).suffix or ".bin"
-        default_name = f"request_{req_id}_bill{ext}"
-        out_file, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Bill File",
-            default_name,
-            "All Files (*.*)"
-        )
-        if not out_file:
-            return
-
-        try:
-            with open(out_file, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=1024 * 64):
-                    if chunk:
-                        f.write(chunk)
-            QMessageBox.information(self, "Download Bill", f"Bill downloaded successfully:\n{out_file}")
-        except Exception as exc:
-            QMessageBox.critical(self, "Download Bill", f"Failed to save file: {exc}")
+        self._download_bill_as_pdf(req_id, self)
     
     def _fetch_bill_response(self, req_id: int, stream: bool) -> tuple[requests.Response | None, str, str | None]:
         """Fetch bill response from server."""
         base = DEFAULT_BASE_URL.rstrip("/")
         endpoint = f"{base}/requests/{req_id}/bill"
+
+        def _fetch_from_endpoint(url: str) -> tuple[requests.Response | None, str | None]:
+            first = self.session.get(url, allow_redirects=False, timeout=20, stream=stream)
+            if first.status_code in (301, 302, 307, 308):
+                location = first.headers.get("Location", "")
+                if not location or "/login" in location:
+                    return None, "Session expired. Please login again."
+                target = location if location.startswith("http") else urljoin(base + "/", location.lstrip("/"))
+                resp = self.session.get(target, timeout=30, stream=stream)
+                if resp.status_code != 200:
+                    return None, f"Failed to fetch file (HTTP {resp.status_code})"
+                self._last_bill_url_by_req[req_id] = target
+                return resp, None
+            if first.status_code == 200:
+                return first, None
+            if first.status_code in (401, 403):
+                return None, "Session expired. Please login again."
+            detail = ""
+            try:
+                detail = first.json().get("detail", "")
+            except Exception:
+                pass
+            return None, (detail or f"Server returned HTTP {first.status_code}")
 
         last_url = (self._last_bill_url_by_req.get(req_id) or "").strip()
         if last_url:
@@ -1830,36 +2039,25 @@ class AdminPanelPySide6(QMainWindow):
                 pass
 
         try:
-            first = self.session.get(endpoint, allow_redirects=False, timeout=20, stream=stream)
+            resp, err = _fetch_from_endpoint(endpoint)
+            if resp is not None:
+                return resp, self._filename_from_response(resp, endpoint, req_id), None
         except Exception as exc:
-            return None, "", f"Failed to contact server: {exc}"
+            err = f"Failed to contact server: {exc}"
 
-        if first.status_code in (301, 302, 307, 308):
-            location = first.headers.get("Location", "")
-            if not location or "/login" in location:
-                return None, "", "Session expired. Please login again."
-            target = location if location.startswith("http") else urljoin(base + "/", location.lstrip("/"))
+        # Fallback for completion flows where bill is uploaded as vendor bill or voucher.
+        for suffix in ("vendor-bill", "company-voucher"):
+            alt_endpoint = f"{base}/requests/{req_id}/{suffix}"
             try:
-                resp = self.session.get(target, timeout=30, stream=stream)
-            except Exception as exc:
-                return None, "", f"Failed to fetch bill file: {exc}"
-            if resp.status_code != 200:
-                return None, "", f"Failed to fetch bill file (HTTP {resp.status_code})"
-            self._last_bill_url_by_req[req_id] = target
-            return resp, self._filename_from_response(resp, target, req_id), None
+                alt_resp, alt_err = _fetch_from_endpoint(alt_endpoint)
+                if alt_resp is not None:
+                    return alt_resp, self._filename_from_response(alt_resp, alt_endpoint, req_id), None
+                if alt_err and "Session expired" in alt_err:
+                    return None, "", alt_err
+            except Exception:
+                pass
 
-        if first.status_code == 200:
-            return first, self._filename_from_response(first, endpoint, req_id), None
-
-        if first.status_code in (401, 403):
-            return None, "", "Session expired. Please login again."
-
-        detail = ""
-        try:
-            detail = first.json().get("detail", "")
-        except Exception:
-            pass
-        return None, "", (detail or f"Server returned HTTP {first.status_code}")
+        return None, "", (err or "No previewable request document found.")
     
     def _filename_from_response(self, resp: requests.Response, source_url: str, req_id: int) -> str:
         """Extract filename from response."""
@@ -1884,22 +2082,156 @@ class AdminPanelPySide6(QMainWindow):
     
     def _show_preview_message(self, message: str) -> None:
         """Show message in preview area."""
+        self._preview_source_pixmap = None
         self.preview_label.clear()
         self.preview_label.setText(message)
         self.preview_label.setStyleSheet("color: #1a3a6e; font-size: 11px;")
+
+    def eventFilter(self, obj, event):
+        if obj is self.preview_scroll.viewport() and event.type() == event.Type.Resize:
+            self._refresh_preview_scaled_pixmap()
+        return super().eventFilter(obj, event)
+
+    def _toggle_preview_summary(self) -> None:
+        """Toggle payment summary visibility to prioritize bill preview space."""
+        self._preview_summary_visible = not self._preview_summary_visible
+        self.summary_card.setVisible(self._preview_summary_visible)
+        if self._preview_summary_visible:
+            self.preview_summary_toggle_btn.setText("Hide Summary")
+        else:
+            self.preview_summary_toggle_btn.setText("Show Summary")
+
+    def _refresh_preview_scaled_pixmap(self) -> None:
+        """Scale preview image to the current viewport for better readability."""
+        if self._preview_source_pixmap is None or self._preview_source_pixmap.isNull():
+            return
+        viewport = self.preview_scroll.viewport().size()
+        if viewport.width() < 40 or viewport.height() < 40:
+            self.preview_label.setPixmap(self._preview_source_pixmap)
+            self.preview_label.resize(self._preview_source_pixmap.size())
+            return
+        # Fit to available width and allow vertical scrolling for full document height.
+        target_width = max(320, viewport.width() - 24)
+        scaled = self._preview_source_pixmap.scaledToWidth(target_width, Qt.SmoothTransformation)
+        self.preview_label.setPixmap(scaled)
+        self.preview_label.resize(scaled.size())
+
+    def _open_full_bill_view(self) -> None:
+        """Open current bill preview in a maximized dialog for full-screen viewing."""
+        if self._preview_source_pixmap is None or self._preview_source_pixmap.isNull():
+            QMessageBox.information(self, "Full View", "Load a bill preview first.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Bill Preview - Full View")
+        dialog.resize(1200, 800)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        scroll = QScrollArea(dialog)
+        scroll.setWidgetResizable(True)
+        full_label = QLabel()
+        full_label.setAlignment(Qt.AlignCenter)
+        full_label.setPixmap(self._preview_source_pixmap)
+        scroll.setWidget(full_label)
+        layout.addWidget(scroll)
+
+        dialog.showMaximized()
+        dialog.exec()
+
+    def _is_pdf_payload(self, content: bytes, filename: str, content_type: str) -> bool:
+        """Detect PDF payload even when filename/content-type are generic."""
+        lower_name = (filename or "").lower()
+        ctype = (content_type or "").lower()
+        return (
+            lower_name.endswith(".pdf")
+            or "application/pdf" in ctype
+            or content.startswith(b"%PDF-")
+        )
+
+    def _is_image_payload(self, content: bytes, filename: str, content_type: str) -> bool:
+        """Detect common image payload signatures for .bin files."""
+        lower_name = (filename or "").lower()
+        ctype = (content_type or "").lower()
+        if any(lower_name.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff")):
+            return True
+        if ctype.startswith("image/"):
+            return True
+        signatures = (
+            b"\x89PNG\r\n\x1a\n",  # PNG
+            b"\xff\xd8\xff",        # JPEG
+            b"GIF87a",                 # GIF87a
+            b"GIF89a",                 # GIF89a
+            b"BM",                     # BMP
+            b"II*\x00",               # TIFF (little-endian)
+            b"MM\x00*",               # TIFF (big-endian)
+        )
+        if any(content.startswith(sig) for sig in signatures):
+            return True
+        # WEBP container: RIFF....WEBP
+        return len(content) > 12 and content.startswith(b"RIFF") and content[8:12] == b"WEBP"
+
+    def _download_bill_as_pdf(self, req_id: int, parent: QWidget | None = None) -> None:
+        """Download a request document in PDF format (convert image payloads to PDF)."""
+        owner = parent or self
+        resp, filename, err = self._fetch_bill_response(req_id, stream=False)
+        if err or resp is None:
+            QMessageBox.critical(owner, "Download Bill", err or "Failed to fetch bill")
+            return
+
+        try:
+            content = resp.content
+            content_type = resp.headers.get("Content-Type", "")
+        except Exception as exc:
+            QMessageBox.critical(owner, "Download Bill", f"Failed to read bill content: {exc}")
+            return
+
+        stem = Path(filename or f"request_{req_id}_bill").stem or f"request_{req_id}_bill"
+        default_name = f"{stem}.pdf"
+        out_file, _ = QFileDialog.getSaveFileName(
+            owner,
+            "Save Bill As PDF",
+            default_name,
+            "PDF Files (*.pdf)"
+        )
+        if not out_file:
+            return
+        if not out_file.lower().endswith(".pdf"):
+            out_file = f"{out_file}.pdf"
+
+        if self._is_pdf_payload(content, filename, content_type):
+            try:
+                with open(out_file, "wb") as f:
+                    f.write(content)
+                QMessageBox.information(owner, "Download Bill", f"Bill downloaded successfully:\n{out_file}")
+            except Exception as exc:
+                QMessageBox.critical(owner, "Download Bill", f"Failed to save PDF: {exc}")
+            return
+
+        if self._is_image_payload(content, filename, content_type):
+            if Image is None:
+                QMessageBox.critical(owner, "Download Bill", "Pillow is required to convert image bills to PDF.")
+                return
+            try:
+                img = Image.open(io.BytesIO(content)).convert("RGB")
+                img.save(out_file, "PDF")
+                QMessageBox.information(owner, "Download Bill", f"Bill downloaded successfully:\n{out_file}")
+            except Exception as exc:
+                QMessageBox.critical(owner, "Download Bill", f"Failed to convert bill to PDF: {exc}")
+            return
+
+        QMessageBox.critical(owner, "Download Bill", "This bill format cannot be converted to PDF.")
     
     def _render_bill_preview(self, content: bytes, filename: str, content_type: str) -> None:
         """Render bill preview."""
-        lower_name = filename.lower()
-        ctype = (content_type or "").lower()
-
         self._pdf_pages = []
         self._pdf_current_page = 0
         self._pdf_content = b""
         self._pdf_page_count = 0
         self.pdf_page_label.setText("")
 
-        if lower_name.endswith(".pdf") or "application/pdf" in ctype:
+        if self._is_pdf_payload(content, filename, content_type):
             if fitz is None:
                 self._show_preview_message("PDF preview unavailable (PyMuPDF not installed). Use Download Bill to open it.")
                 return
@@ -1922,17 +2254,17 @@ class AdminPanelPySide6(QMainWindow):
             self._show_preview_message("Image preview needs Pillow. Use Download Bill if preview is unavailable.")
             return
 
+        if not self._is_image_payload(content, filename, content_type):
+            self._show_preview_message("This file type is not previewable. Use Download Bill.")
+            return
+
         try:
             img = Image.open(io.BytesIO(content))
             img = img.convert("RGB")
             qimage = QImage(img.tobytes(), img.width, img.height, QImage.Format_RGB888).copy()
             pixmap = QPixmap.fromImage(qimage)
-            self.preview_label.setPixmap(pixmap.scaled(
-                self.preview_label.width(),
-                self.preview_label.height(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            ))
+            self._preview_source_pixmap = pixmap
+            self._refresh_preview_scaled_pixmap()
         except Exception:
             self._show_preview_message("This file type is not previewable. Use Download Bill.")
     
@@ -1959,12 +2291,8 @@ class AdminPanelPySide6(QMainWindow):
                 return
         qimage = QImage(img.tobytes(), img.width, img.height, QImage.Format_RGB888).copy()
         pixmap = QPixmap.fromImage(qimage)
-        self.preview_label.setPixmap(pixmap.scaled(
-            self.preview_label.width(),
-            self.preview_label.height(),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation
-        ))
+        self._preview_source_pixmap = pixmap
+        self._refresh_preview_scaled_pixmap()
         self.pdf_page_label.setText(f"Page {page_num + 1} / {total}")
         self.preview_status.setText(f"PDF — Page {page_num + 1} of {total} — {self.preview_filename}")
     
@@ -2021,20 +2349,116 @@ class AdminPanelPySide6(QMainWindow):
     
     def _extract_error_message(self, body: dict, status_code: int) -> str:
         """Extract error message from response body."""
+        def _to_text(value) -> str:
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (list, tuple)):
+                # FastAPI validation errors are typically a list of dict entries.
+                if value and all(isinstance(x, dict) for x in value):
+                    lines = []
+                    for entry in value:
+                        loc = entry.get("loc")
+                        msg = entry.get("msg")
+                        if isinstance(loc, (list, tuple)):
+                            loc_parts = [str(part) for part in loc if str(part) != "body"]
+                            loc_text = ".".join(loc_parts)
+                        else:
+                            loc_text = ""
+                        msg_text = str(msg) if msg is not None else str(entry)
+                        lines.append(f"{loc_text}: {msg_text}" if loc_text else msg_text)
+                    return "\n".join(lines)
+                return "\n".join(str(x) for x in value)
+            if isinstance(value, dict):
+                return ", ".join(f"{k}: {v}" for k, v in value.items())
+            if value is None:
+                return ""
+            return str(value)
+
         if isinstance(body, dict):
-            return body.get("detail", body.get("message", f"HTTP {status_code}"))
+            detail = body.get("detail")
+            message = body.get("message")
+            text = _to_text(detail) or _to_text(message)
+            return text or f"HTTP {status_code}"
         return f"HTTP {status_code}"
     
     def _perform_action(self, endpoint: str, payload: dict) -> tuple[bool, str]:
         """Perform API action."""
+        def _to_text(value) -> str:
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (list, tuple)):
+                return "\n".join(str(x) for x in value)
+            if isinstance(value, dict):
+                return ", ".join(f"{k}: {v}" for k, v in value.items())
+            if value is None:
+                return ""
+            return str(value)
+
+        def _json_body(resp) -> dict:
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "application/json" in ctype:
+                try:
+                    data = resp.json()
+                    return data if isinstance(data, dict) else {"detail": data}
+                except Exception:
+                    return {}
+            return {}
+
+        def _post_json(url: str):
+            return self.session.post(
+                url,
+                json=payload,
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+                allow_redirects=False,
+                timeout=20,
+            )
+
+        def _post_form(url: str):
+            return self.session.post(
+                url,
+                data=payload,
+                headers={"Accept": "application/json"},
+                allow_redirects=False,
+                timeout=20,
+            )
+
         base = self._server_url()
         try:
-            response = self.session.post(f"{base}{endpoint}", json=payload, timeout=20)
-            if response.status_code != 200:
-                body = response.json() if response.headers.get("Content-Type", "").startswith("application/json") else {}
+            action_url = f"{base}{endpoint}"
+            response = _post_json(action_url)
+
+            # Preserve POST + JSON body across redirects; some servers emit 302 for POST routes.
+            for _ in range(2):
+                if response.status_code not in (301, 302, 303, 307, 308):
+                    break
+                location = (response.headers.get("Location") or "").strip()
+                if not location:
+                    break
+                action_url = urljoin(action_url + "/", location)
+                response = _post_json(action_url)
+
+            body = _json_body(response)
+
+            # Compatibility fallback: some deployments expect form fields instead of JSON.
+            if response.status_code == 422:
+                detail_text = _to_text(body.get("detail")).lower() if isinstance(body, dict) else ""
+                if ("required" in detail_text or "missing" in detail_text) and ("body" in detail_text):
+                    response = _post_form(action_url)
+                    for _ in range(2):
+                        if response.status_code not in (301, 302, 303, 307, 308):
+                            break
+                        location = (response.headers.get("Location") or "").strip()
+                        if not location:
+                            break
+                        action_url = urljoin(action_url + "/", location)
+                        response = _post_form(action_url)
+                    body = _json_body(response)
+
+            if not (200 <= response.status_code < 300):
                 return False, self._extract_error_message(body, response.status_code)
-            body = response.json() if response.headers.get("Content-Type", "").startswith("application/json") else {}
-            return True, body.get("message", "Action completed successfully")
+
+            ok_text = _to_text(body.get("message")) or _to_text(body.get("detail"))
+            return True, (ok_text or "Action completed successfully")
         except Exception as exc:
             return False, str(exc)
     
@@ -2052,6 +2476,8 @@ class AdminPanelPySide6(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Request #{req_id} — Full Summary")
         dialog.resize(1050, 650)
+        dialog_closed = {"value": False}
+        dialog.destroyed.connect(lambda *_: dialog_closed.__setitem__("value", True))
         
         layout = QHBoxLayout(dialog)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2156,108 +2582,35 @@ class AdminPanelPySide6(QMainWindow):
         scroll.setWidget(details_widget)
         left_layout.addWidget(scroll)
         
-        layout.addWidget(left_panel, 0)
-        
-        # Right panel - Bill preview
-        right_panel = QFrame()
-        right_panel.setStyleSheet("background-color: #1e293b;")
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Header
-        bill_header = QLabel("Bill Preview")
-        bill_header.setStyleSheet("background-color: #0B2C5F; color: white; font-size: 11px; font-weight: bold; padding: 8px 14px;")
-        right_layout.addWidget(bill_header)
-        
-        # Status
-        bill_status = QLabel("Loading bill…")
-        bill_status.setStyleSheet("color: #93c5fd; font-size: 9px; padding: 8px 14px;")
-        right_layout.addWidget(bill_status)
-        
-        # PDF nav
-        nav_bar = QHBoxLayout()
-        nav_bar.setContentsMargins(10, 4, 10, 4)
-        
-        pdf_pages = []
-        pdf_idx = [0]
-        page_label = QLabel("")
-        page_label.setStyleSheet("color: #cbd5e1; font-size: 9px;")
-        nav_bar.addWidget(page_label)
-        
-        prev_btn = QPushButton("◀")
-        prev_btn.setStyleSheet("background-color: #334155; color: white; border: none; padding: 4px 8px;")
-        prev_btn.clicked.connect(lambda: self._show_pdf_page_d(pdf_pages, pdf_idx, page_label, pdf_idx[0] - 1))
-        nav_bar.addWidget(prev_btn)
-        
-        next_btn = QPushButton("▶")
-        next_btn.setStyleSheet("background-color: #334155; color: white; border: none; padding: 4px 8px;")
-        next_btn.clicked.connect(lambda: self._show_pdf_page_d(pdf_pages, pdf_idx, page_label, pdf_idx[0] + 1))
-        nav_bar.addWidget(next_btn)
-        
-        right_layout.addLayout(nav_bar)
-        
-        # Preview area
-        preview_area = QLabel()
-        preview_area.setStyleSheet("background-color: #1e293b;")
-        preview_area.setAlignment(Qt.AlignCenter)
-        right_layout.addWidget(preview_area, 1)
-        
-        layout.addWidget(right_panel, 1)
-        
-        def render_detail_bill(content: bytes, filename: str, ctype: str) -> None:
-            bill_status.setText(filename)
-            lower = filename.lower()
-            if lower.endswith(".pdf") or "application/pdf" in ctype:
-                if fitz is None:
-                    preview_area.setText("PDF preview unavailable (PyMuPDF not installed).")
-                    return
-                try:
-                    doc = fitz.open(stream=content, filetype="pdf")
-                    page_count = doc.page_count
-                    pages = []
-                    for i in range(min(page_count, 3)):
-                        pix = doc[i].get_pixmap(matrix=fitz.Matrix(2, 2))
-                        img = Image.open(io.BytesIO(pix.tobytes("ppm")))
-                        img.load()
-                        pages.append(img.convert("RGB"))
-                    doc.close()
-                    pdf_pages.extend(pages)
-                    self._show_pdf_page_d(pdf_pages, pdf_idx, page_label, 0)
-                    if page_count > 3:
-                        bill_status.setText(f"{filename} - showing first 3 pages for speed")
-                except Exception as exc:
-                    preview_area.setText(f"PDF render error: {exc}")
-            else:
-                try:
-                    img = Image.open(io.BytesIO(content))
-                    img = img.convert("RGB")
-                    qimage = QImage(img.tobytes(), img.width, img.height, QImage.Format_RGB888).copy()
-                    pixmap = QPixmap.fromImage(qimage)
-                    preview_area.setPixmap(pixmap.scaled(
-                        preview_area.width(), preview_area.height(),
-                        Qt.KeepAspectRatio, Qt.SmoothTransformation
-                    ))
-                except Exception:
-                    preview_area.setText("Cannot preview this file type.")
+        layout.addWidget(left_panel, 1)
 
-        def detail_loaded(loaded_req_id: int, content: bytes, filename: str, ctype: str) -> None:
-            if loaded_req_id == req_id:
-                render_detail_bill(content, filename, ctype)
+        # Bottom actions - summary only, no preview panel.
+        action_bar = QFrame()
+        action_bar.setStyleSheet("background-color: #f1f5f9; border-top: 1px solid #d6dee8;")
+        action_layout = QHBoxLayout(action_bar)
+        action_layout.setContentsMargins(10, 8, 10, 8)
 
-        def detail_failed(loaded_req_id: int, err: str) -> None:
-            if loaded_req_id == req_id:
-                bill_status.setText(err)
-                preview_area.setText("No bill attached or failed to load.")
+        doc_state = "Bill attached" if (self.bill_paths.get(req_id) or "").strip() else "No bill path on this request"
+        doc_label = QLabel(doc_state)
+        doc_label.setStyleSheet("color: #334155; font-size: 10px;")
+        action_layout.addWidget(doc_label)
+        action_layout.addStretch()
 
-        loader = BillFetchThread(self, req_id)
-        loader.loaded.connect(detail_loaded)
-        loader.failed.connect(detail_failed)
-        dialog._bill_loader = loader
-        loader.start()
+        def download_detail_bill() -> None:
+            if dialog_closed["value"]:
+                return
+            self._download_bill_as_pdf(req_id, dialog)
+
+        download_btn = QPushButton("Download Bill")
+        download_btn.setStyleSheet("background-color: #155c8a; color: white; border: none; padding: 6px 12px;")
+        download_btn.clicked.connect(download_detail_bill)
+        action_layout.addWidget(download_btn)
+
+        left_layout.addWidget(action_bar)
         
         dialog.exec()
     
-    def _show_pdf_page_d(self, pages: list, idx: list, label: QLabel, page_num: int) -> None:
+    def _show_pdf_page_d(self, pages: list, idx: list, label: QLabel, preview_area: QLabel, page_num: int) -> None:
         """Show PDF page in detail window."""
         if not pages:
             return
@@ -2268,16 +2621,9 @@ class AdminPanelPySide6(QMainWindow):
         img = img.convert("RGB")
         qimage = QImage(img.tobytes(), img.width, img.height, QImage.Format_RGB888).copy()
         pixmap = QPixmap.fromImage(qimage)
-        # Find the preview label in the dialog
-        sender = label.parent()
-        while sender:
-            if isinstance(sender, QDialog):
-                for child in sender.findChildren(QLabel):
-                    if child != label and child.styleSheet() == "background-color: #1e293b;":
-                        child.setPixmap(pixmap.scaled(child.width(), child.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                        break
-                break
-            sender = sender.parent()
+        target_w = max(preview_area.width(), 640)
+        target_h = max(preview_area.height(), 480)
+        preview_area.setPixmap(pixmap.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
     
     def open_partial_approve_dialog(self, req_id: int) -> None:
         """Open partial approve dialog for recording payments."""
@@ -2530,6 +2876,7 @@ class AdminPanelPySide6(QMainWindow):
         field_label: str,
         submit_text: str,
         required: bool,
+        alias_field_names: tuple[str, ...] = (),
     ) -> None:
         """Open dialog for text-based actions (e.g., Reject)."""
         dialog = QDialog(self)
@@ -2572,10 +2919,14 @@ class AdminPanelPySide6(QMainWindow):
                 status_label.setText(f"{field_label} is required.")
                 status_label.setStyleSheet("color: #b02a37;")
                 return
+
+            payload = {field_name: value}
+            for alias in alias_field_names:
+                payload[alias] = value
             
             success, message = self._perform_action(
                 path_template.format(req_id=req_id),
-                {field_name: value},
+                payload,
             )
             status_label.setText(message)
             status_label.setStyleSheet("color: #1f8a43;" if success else "color: #b02a37;")
@@ -2790,12 +3141,31 @@ class AdminPanelPySide6(QMainWindow):
 
 
 def main() -> int:
-    app = QApplication(sys.argv)
-    window = AdminPanelPySide6()
-    window.show()
-    return app.exec()
+    sys.excepthook = lambda exc_type, exc_value, exc_traceback: _report_runtime_exception(
+        "Admin Panel Error", exc_type, exc_value, exc_traceback
+    )
+    threading.excepthook = _threading_excepthook
+
+    try:
+        app = QApplication(sys.argv)
+        window = AdminPanelPySide6()
+        window.show()
+        exit_code = app.exec()
+        print(f"Admin panel exited with code {exit_code}", flush=True)
+        # Some Windows terminal/GUI shutdown paths surface as Qt exit code 1
+        # even when no unhandled exception occurred.
+        if exit_code == 1:
+            print("Normalizing Qt exit code 1 to 0 (clean shutdown).", flush=True)
+            return 0
+        return exit_code
+    except KeyboardInterrupt:
+        print("Admin panel interrupted; exiting cleanly.", flush=True)
+        return 0
+    except Exception:
+        exc_type, exc_value, exc_traceback = sys.exc_info()
+        _report_runtime_exception("Admin Panel Startup Error", exc_type, exc_value, exc_traceback)
+        return 1
 
 
 if __name__ == "__main__":
-    import sys
-    sys.exit(main())
+    main()
