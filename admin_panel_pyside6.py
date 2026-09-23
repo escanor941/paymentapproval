@@ -5,12 +5,57 @@ import io
 import re
 import threading
 import traceback
+import warnings
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin
 import webbrowser
 
 import requests
+
+try:
+    import certifi
+except Exception:
+    certifi = None
+
+
+def _resolve_ca_bundle_path() -> str | None:
+    """Return a valid CA bundle path for requests, or None if no bundle is available."""
+    candidates = []
+    for env_name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+        value = os.getenv(env_name)
+        if value:
+            candidates.append(value)
+    if certifi is not None:
+        cert_path = certifi.where()
+        if cert_path:
+            candidates.append(cert_path)
+    if getattr(sys, "_MEIPASS", None):
+        candidates.extend([
+            os.path.join(sys._MEIPASS, "certifi", "cacert.pem"),
+            os.path.join(sys._MEIPASS, "_internal", "certifi", "cacert.pem"),
+            os.path.join(sys._MEIPASS, "cacert.pem"),
+        ])
+    candidates.extend([
+        os.path.join(os.getcwd(), "certifi", "cacert.pem"),
+        os.path.join(os.getcwd(), "cacert.pem"),
+    ])
+
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+if certifi is not None:
+    cert_path = _resolve_ca_bundle_path()
+    if cert_path:
+        os.environ.setdefault("SSL_CERT_FILE", cert_path)
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", cert_path)
 
 try:
     from glass_blue_erp_theme import apply_glass_blue_erp_theme, GlassColors, GlassStyles
@@ -52,9 +97,10 @@ except Exception:
     Workbook = None
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageOps
 except Exception:
     Image = None
+    ImageOps = None
 
 try:
     import fitz  # PyMuPDF
@@ -66,16 +112,16 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QTextEdit, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QFrame,
     QCheckBox, QScrollArea, QSplitter, QGroupBox, QDialog, QDialogButtonBox,
-    QProgressBar, QStatusBar, QGridLayout, QComboBox, QTabWidget,
+    QProgressBar, QStatusBar, QGridLayout, QComboBox, QTabWidget, QDateEdit,
     QSizePolicy, QSpacerItem, QStackedWidget, QInputDialog
 )
-from PySide6.QtCore import Qt, QTimer, QSize, Signal, QThread
+from PySide6.QtCore import Qt, QTimer, QSize, Signal, QThread, QDate
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtGui import QFont, QColor, QPalette, QPixmap, QImage
 from PySide6.QtGui import QDesktopServices
 
 APP_NAME = "EMDAdminPanel"
-DEFAULT_BASE_URL = "https://paymentapproval.onrender.com"
+DEFAULT_BASE_URL = "https://factory-purchase-approval-production.up.railway.app"
 
 
 def _report_runtime_exception(title: str, exc_type, exc_value, exc_traceback) -> None:
@@ -196,6 +242,755 @@ def init_db() -> None:
         conn.commit()
 
 
+class AIInsightsDialog(QDialog):
+    """AI Insights dialog for management decision-making."""
+    
+    def __init__(self, parent=None, server_items=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("🤖 AI Insights - EMD Group")
+        self.resize(1400, 900)
+        self.setMinimumSize(1200, 700)
+        
+        # Store server items (same data source as requests page)
+        self.server_items = server_items or []
+        self.current_insights: dict = {}
+        
+        # Apply styling
+        self.setStyleSheet(f"""
+            QDialog {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {GlassColors.BG_DARK},
+                    stop:1 {GlassColors.BG_LIGHT});
+            }}
+        """)
+        
+        # Build UI
+        self._build_ui()
+        
+        # Populate month filter from server items
+        self._populate_month_filter()
+        
+        # Initial load
+        self._refresh_ai_insights()
+    
+    def _create_card(self, title: str = "") -> QFrame:
+        """Create a glass card with Glass Blue ERP styling."""
+        card = QFrame()
+        card.setStyleSheet(GlassStyles.glass_card_style())
+        return card
+    
+    def _populate_month_filter(self) -> None:
+        """Populate month filter dropdown with available months from server items."""
+        try:
+            # Get unique months from server items
+            months = set()
+            for item in self.server_items:
+                request_date = item.get("request_date")
+                if request_date:
+                    try:
+                        month_key = datetime.strptime(request_date.split("T")[0], "%Y-%m-%d").strftime("%Y-%m")
+                        months.add(month_key)
+                    except:
+                        pass
+            
+            # Clear existing items except "All Months"
+            self.month_filter.clear()
+            self.month_filter.addItem("All Months", "all")
+            
+            # Add available months sorted descending
+            for month_key in sorted(months, reverse=True):
+                try:
+                    month_obj = datetime.strptime(month_key, "%Y-%m")
+                    display_name = month_obj.strftime("%B %Y")
+                    self.month_filter.addItem(display_name, month_key)
+                except:
+                    self.month_filter.addItem(month_key, month_key)
+        except Exception as exc:
+            print(f"Error populating month filter: {exc}")
+    
+    def _build_ui(self) -> None:
+        """Build the AI Insights dialog UI."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        
+        # Header
+        header = QFrame()
+        header.setStyleSheet(f"""
+            QFrame {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {GlassColors.PRIMARY_DARK},
+                    stop:1 {GlassColors.PRIMARY_LIGHT});
+                border-radius: 8px;
+            }}
+        """)
+        header.setFixedHeight(60)
+        
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(16, 8, 16, 8)
+        
+        title = QLabel("🤖 AI Insights - Management Decision Support")
+        title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 16px; font-weight: bold;")
+        header_layout.addWidget(title)
+        
+        header_layout.addStretch()
+        
+        # Month filter
+        month_label = QLabel("Month:")
+        month_label.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 12px;")
+        header_layout.addWidget(month_label)
+        
+        self.month_filter = QComboBox()
+        self.month_filter.setStyleSheet(f"""
+            QComboBox {{
+                background: {GlassColors.GLASS_BG};
+                color: {GlassColors.TEXT_PRIMARY};
+                border: 1px solid {GlassColors.BORDER_COLOR};
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+                min-width: 120px;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+            }}
+        """)
+        self.month_filter.addItem("All Months", "all")
+        self.month_filter.currentIndexChanged.connect(self._refresh_ai_insights)
+        header_layout.addWidget(self.month_filter)
+        
+        # Refresh button
+        refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn.setStyleSheet(GlassStyles.button_primary_style())
+        refresh_btn.clicked.connect(self._refresh_ai_insights)
+        header_layout.addWidget(refresh_btn)
+
+        export_btn = QPushButton("📤 Export Data")
+        export_btn.setStyleSheet(GlassStyles.button_primary_style())
+        export_btn.clicked.connect(self.export_ai_data)
+        header_layout.addWidget(export_btn)
+        
+        # Close button
+        close_btn = QPushButton("✕ Close")
+        close_btn.setStyleSheet(GlassStyles.button_primary_style())
+        close_btn.clicked.connect(self.accept)
+        header_layout.addWidget(close_btn)
+        
+        layout.addWidget(header)
+        
+        # Scroll area for all insights
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setStyleSheet(f"""
+            QScrollArea {{
+                background: transparent;
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                background: {GlassColors.BG_MID};
+                width: 12px;
+                border-radius: 6px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {GlassColors.PRIMARY_ACCENT};
+                border-radius: 6px;
+                min-height: 30px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar:horizontal {{
+                background: {GlassColors.BG_MID};
+                height: 12px;
+                border-radius: 6px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: {GlassColors.PRIMARY_ACCENT};
+                border-radius: 6px;
+                min-width: 30px;
+            }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+                width: 0px;
+            }}
+        """)
+        
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(12)
+        
+        # AI Management Summary
+        summary_card = self._create_card()
+        summary_layout = QVBoxLayout(summary_card)
+        summary_layout.setContentsMargins(16, 16, 16, 16)
+        
+        summary_title = QLabel("🤖 AI Management Summary")
+        summary_title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 14px; font-weight: bold;")
+        summary_layout.addWidget(summary_title)
+        
+        self.ai_summary_text = QTextEdit()
+        self.ai_summary_text.setReadOnly(True)
+        self.ai_summary_text.setMaximumHeight(200)
+        self.ai_summary_text.setStyleSheet(f"""
+            QTextEdit {{
+                background: {GlassColors.GLASS_BG};
+                color: {GlassColors.TEXT_PRIMARY};
+                border: 1px solid {GlassColors.BORDER_COLOR};
+                border-radius: 6px;
+                padding: 12px;
+                font-size: 11px;
+            }}
+        """)
+        summary_layout.addWidget(self.ai_summary_text)
+        
+        scroll_layout.addWidget(summary_card)
+        
+        # Two-column layout for insights
+        columns_layout = QHBoxLayout()
+        columns_layout.setSpacing(12)
+        
+        # Left column
+        left_column = QWidget()
+        left_layout = QVBoxLayout(left_column)
+        left_layout.setSpacing(12)
+        
+        # Monthly Spend Summary
+        monthly_card = self._create_card()
+        monthly_layout = QVBoxLayout(monthly_card)
+        monthly_layout.setContentsMargins(16, 16, 16, 16)
+        
+        monthly_title = QLabel("📅 Monthly Spend Summary")
+        monthly_title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 13px; font-weight: bold;")
+        monthly_layout.addWidget(monthly_title)
+        
+        self.monthly_spend_table = QTableWidget()
+        self.monthly_spend_table.setColumnCount(3)
+        self.monthly_spend_table.setHorizontalHeaderLabels(["Month", "Amount (₹)", "Change"])
+        self.monthly_spend_table.setStyleSheet(GlassStyles.table_style())
+        self.monthly_spend_table.setMaximumHeight(200)
+        self.monthly_spend_table.horizontalHeader().setStretchLastSection(True)
+        monthly_layout.addWidget(self.monthly_spend_table)
+        
+        left_layout.addWidget(monthly_card)
+        
+        # Top 10 Purchased Items
+        top_items_card = self._create_card()
+        top_items_layout = QVBoxLayout(top_items_card)
+        top_items_layout.setContentsMargins(16, 16, 16, 16)
+        
+        top_items_title = QLabel("🏆 Top 10 Purchased Items")
+        top_items_title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 13px; font-weight: bold;")
+        top_items_layout.addWidget(top_items_title)
+        
+        self.top_items_table = QTableWidget()
+        self.top_items_table.setColumnCount(3)
+        self.top_items_table.setHorizontalHeaderLabels(["Item", "Total Qty", "Total Amount (₹)"])
+        self.top_items_table.setStyleSheet(GlassStyles.table_style())
+        self.top_items_table.setMaximumHeight(250)
+        self.top_items_table.horizontalHeader().setStretchLastSection(True)
+        top_items_layout.addWidget(self.top_items_table)
+        
+        left_layout.addWidget(top_items_card)
+        
+        # Vendor-wise Spend
+        vendor_card = self._create_card()
+        vendor_layout = QVBoxLayout(vendor_card)
+        vendor_layout.setContentsMargins(16, 16, 16, 16)
+        
+        vendor_title = QLabel("🏢 Vendor-wise Spend")
+        vendor_title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 13px; font-weight: bold;")
+        vendor_layout.addWidget(vendor_title)
+        
+        self.vendor_spend_table = QTableWidget()
+        self.vendor_spend_table.setColumnCount(3)
+        self.vendor_spend_table.setHorizontalHeaderLabels(["Vendor", "Amount (₹)", "% of Total"])
+        self.vendor_spend_table.setStyleSheet(GlassStyles.table_style())
+        self.vendor_spend_table.setMaximumHeight(250)
+        self.vendor_spend_table.horizontalHeader().setStretchLastSection(True)
+        vendor_layout.addWidget(self.vendor_spend_table)
+        
+        left_layout.addWidget(vendor_card)
+        
+        left_layout.addStretch()
+        
+        # Right column
+        right_column = QWidget()
+        right_layout = QVBoxLayout(right_column)
+        right_layout.setSpacing(12)
+        
+        # Top 10 Highest-Cost Purchases
+        high_cost_card = self._create_card()
+        high_cost_layout = QVBoxLayout(high_cost_card)
+        high_cost_layout.setContentsMargins(16, 16, 16, 16)
+        
+        high_cost_title = QLabel("💰 Top 10 Highest-Cost Purchases")
+        high_cost_title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 13px; font-weight: bold;")
+        high_cost_layout.addWidget(high_cost_title)
+        
+        self.high_cost_table = QTableWidget()
+        self.high_cost_table.setColumnCount(4)
+        self.high_cost_table.setHorizontalHeaderLabels(["ID", "Item", "Amount (₹)", "Date"])
+        self.high_cost_table.setStyleSheet(GlassStyles.table_style())
+        self.high_cost_table.setMaximumHeight(250)
+        self.high_cost_table.horizontalHeader().setStretchLastSection(True)
+        high_cost_layout.addWidget(self.high_cost_table)
+        
+        right_layout.addWidget(high_cost_card)
+        
+        # Category-wise Spend
+        category_card = self._create_card()
+        category_layout = QVBoxLayout(category_card)
+        category_layout.setContentsMargins(16, 16, 16, 16)
+        
+        category_title = QLabel("📦 Category-wise Spend")
+        category_title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 13px; font-weight: bold;")
+        category_layout.addWidget(category_title)
+        
+        self.category_spend_table = QTableWidget()
+        self.category_spend_table.setColumnCount(3)
+        self.category_spend_table.setHorizontalHeaderLabels(["Category", "Amount (₹)", "% of Total"])
+        self.category_spend_table.setStyleSheet(GlassStyles.table_style())
+        self.category_spend_table.setMaximumHeight(200)
+        self.category_spend_table.horizontalHeader().setStretchLastSection(True)
+        category_layout.addWidget(self.category_spend_table)
+        
+        right_layout.addWidget(category_card)
+        
+        # Pending Payment Summary
+        pending_card = self._create_card()
+        pending_layout = QVBoxLayout(pending_card)
+        pending_layout.setContentsMargins(16, 16, 16, 16)
+        
+        pending_title = QLabel("⏳ Pending Payment Summary")
+        pending_title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 13px; font-weight: bold;")
+        pending_layout.addWidget(pending_title)
+        
+        self.pending_payment_label = QLabel()
+        self.pending_payment_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-size: 11px;")
+        self.pending_payment_label.setWordWrap(True)
+        pending_layout.addWidget(self.pending_payment_label)
+        
+        right_layout.addWidget(pending_card)
+        
+        # Cost-cutting Suggestions
+        suggestions_card = self._create_card()
+        suggestions_layout = QVBoxLayout(suggestions_card)
+        suggestions_layout.setContentsMargins(16, 16, 16, 16)
+        
+        suggestions_title = QLabel("💡 Cost-cutting Suggestions")
+        suggestions_title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 13px; font-weight: bold;")
+        suggestions_layout.addWidget(suggestions_title)
+        
+        self.suggestions_text = QTextEdit()
+        self.suggestions_text.setReadOnly(True)
+        self.suggestions_text.setMaximumHeight(150)
+        self.suggestions_text.setStyleSheet(f"""
+            QTextEdit {{
+                background: {GlassColors.GLASS_BG};
+                color: {GlassColors.TEXT_PRIMARY};
+                border: 1px solid {GlassColors.BORDER_COLOR};
+                border-radius: 6px;
+                padding: 12px;
+                font-size: 11px;
+            }}
+        """)
+        suggestions_layout.addWidget(self.suggestions_text)
+        
+        right_layout.addWidget(suggestions_card)
+        
+        right_layout.addStretch()
+        
+        columns_layout.addWidget(left_column, 1)
+        columns_layout.addWidget(right_column, 1)
+        
+        scroll_layout.addLayout(columns_layout)
+        scroll_layout.addStretch()
+        
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll, 1)
+    
+    def _refresh_ai_insights(self) -> None:
+        """Refresh AI Insights with current data."""
+        try:
+            insights = self._generate_ai_insights()
+            self.current_insights = insights
+            self._display_ai_insights(insights)
+        except Exception as exc:
+            import traceback
+            error_msg = f"Error generating insights:\n{str(exc)}\n\nTraceback:\n{traceback.format_exc()}"
+            self.ai_summary_text.setText(error_msg)
+
+    def export_ai_data(self) -> None:
+        """Export the currently filtered AI Insights data to an Excel workbook."""
+        if Workbook is None:
+            QMessageBox.critical(self, "Export Data", "openpyxl is not installed. Cannot export to Excel.")
+            return
+
+        insights = self.current_insights
+        if not insights or "error" in insights:
+            QMessageBox.information(self, "Export Data", insights.get("error", "No AI Insights data available."))
+            return
+
+        out_file, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export AI Insights Data",
+            "ai_insights_export.xlsx",
+            "Excel Files (*.xlsx)",
+        )
+        if not out_file:
+            return
+        if not out_file.lower().endswith(".xlsx"):
+            out_file = f"{out_file}.xlsx"
+
+        try:
+            workbook = Workbook()
+            summary_sheet = workbook.active
+            summary_sheet.title = "Summary"
+            summary_sheet.append(["Metric", "Value"])
+            summary_sheet.append(["Month filter", self.month_filter.currentText()])
+            summary_sheet.append(["Total spend", insights.get("total_spend", 0)])
+            pending = insights.get("pending_payment", {})
+            summary_sheet.append(["Pending payment total", pending.get("total", 0)])
+            summary_sheet.append(["Pending payment count", pending.get("count", 0)])
+            summary_sheet.append(["AI summary", insights.get("ai_summary", "")])
+            summary_sheet.append(["Suggestions", insights.get("suggestions", "")])
+
+            def add_sheet(title: str, headers: list[str], rows: list[list]) -> None:
+                sheet = workbook.create_sheet(title)
+                sheet.append(headers)
+                for row in rows:
+                    sheet.append(row)
+
+            add_sheet("Monthly Spend", ["Month", "Amount"], [[month, amount] for month, amount in insights.get("monthly_spend", [])])
+            add_sheet("Top Items", ["Item", "Total Quantity", "Total Amount"], [[name, qty, amount] for name, qty, amount in insights.get("top_items", [])])
+            add_sheet("Vendor Spend", ["Vendor", "Amount"], [[vendor, amount] for vendor, amount in insights.get("vendor_spend", [])])
+            add_sheet("Category Spend", ["Category", "Amount"], [[category, amount] for category, amount in insights.get("category_spend", [])])
+            add_sheet(
+                "Highest Cost",
+                ["ID", "Item", "Amount", "Date", "Vendor", "Category", "Status", "Payment Status"],
+                [
+                    [
+                        item.get("id"), item.get("item_name"), item.get("final_amount", 0),
+                        item.get("request_date"), item.get("vendor"), item.get("item_category"),
+                        item.get("approval_status"), item.get("payment_status"),
+                    ]
+                    for item in insights.get("high_cost", [])
+                ],
+            )
+            add_sheet(
+                "Source Data",
+                ["ID", "Date", "Category", "Vendor", "Item", "Qty", "Unit", "Amount", "Approval Status", "Payment Status"],
+                [
+                    [
+                        item.get("id"), item.get("request_date"), item.get("item_category"), item.get("vendor"),
+                        item.get("item_name"), item.get("qty", 0), item.get("unit"), item.get("final_amount", 0),
+                        item.get("approval_status"), item.get("payment_status"),
+                    ]
+                    for item in insights.get("data", [])
+                ],
+            )
+
+            for sheet in workbook.worksheets:
+                sheet.freeze_panes = "A2"
+                sheet.auto_filter.ref = sheet.dimensions
+                for column in sheet.columns:
+                    width = min(max(len(str(cell.value or "")) for cell in column) + 2, 42)
+                    sheet.column_dimensions[column[0].column_letter].width = width
+
+            workbook.save(out_file)
+            QMessageBox.information(self, "Export Data", f"AI Insights data exported successfully to:\n{out_file}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Data", f"Export failed: {exc}")
+    
+    def _generate_ai_insights(self) -> dict:
+        """Generate AI insights from server items (same data source as requests page)."""
+        # Get selected month filter
+        selected_month = self.month_filter.currentData()
+        
+        print(f"[AI Insights] Using server items: {len(self.server_items)} items")
+        print(f"[AI Insights] Selected month filter: {selected_month}")
+        
+        if not self.server_items:
+            return {"error": "No data available. Please sync with server first."}
+        
+        # Convert server items to consistent format
+        data = []
+        for item in self.server_items:
+            request_date = item.get("request_date", "")
+            if request_date and "T" in request_date:
+                request_date = request_date.split("T")[0]
+            
+            data.append({
+                "id": item.get("id"),
+                "request_date": request_date,
+                "item_category": item.get("item_category") or item.get("request_type") or "Other",
+                "vendor": item.get("vendor") or "Unknown",
+                "item_name": item.get("item_name") or item.get("purpose") or "Unknown",
+                "qty": item.get("qty") or 0,
+                "unit": item.get("unit") or "",
+                "final_amount": item.get("final_amount") or 0,
+                "approval_status": item.get("approval_status") or "Pending",
+                "payment_status": item.get("payment_status") or "Unknown",
+            })
+        
+        # Apply month filter if selected
+        if selected_month != "all":
+            data = [item for item in data if item["request_date"].startswith(selected_month)]
+            print(f"[AI Insights] After month filter: {len(data)} items")
+        
+        if not data:
+            return {"error": f"No data found for selected month. Please choose a different month or select 'All Months'."}
+        
+        # Log all unique approval statuses found
+        unique_statuses = set(item["approval_status"] for item in data)
+        print(f"[AI Insights] Unique approval statuses: {unique_statuses}")
+        
+        # Filter for approved/partial approved for spend analysis (case-insensitive)
+        approved_data = [item for item in data if (item["approval_status"] or "").strip().lower() in ("approved", "partial approved", "hold")]
+        
+        print(f"[AI Insights] Approved/Partial Approved count: {len(approved_data)}")
+        
+        # If no approved requests, use all data for insights
+        if not approved_data:
+            print(f"[AI Insights] No approved requests found, using all data for analysis")
+            approved_data = data
+        
+        insights = {}
+        
+        # Monthly spend summary
+        monthly_spend = {}
+        for item in approved_data:
+            try:
+                date_obj = datetime.strptime(item["request_date"], "%Y-%m-%d")
+                month_key = date_obj.strftime("%Y-%m")
+                monthly_spend[month_key] = monthly_spend.get(month_key, 0) + item["final_amount"]
+            except:
+                pass
+        
+        insights["monthly_spend"] = sorted(monthly_spend.items(), reverse=True)
+        
+        # Top 10 purchased items (by quantity)
+        item_qty = {}
+        item_amount = {}
+        for item in approved_data:
+            name = item["item_name"][:50]
+            item_qty[name] = item_qty.get(name, 0) + item["qty"]
+            item_amount[name] = item_amount.get(name, 0) + item["final_amount"]
+        
+        top_items = sorted(item_amount.items(), key=lambda x: x[1], reverse=True)[:10]
+        insights["top_items"] = [(name, item_qty.get(name, 0), amount) for name, amount in top_items]
+        
+        # Top 10 highest-cost purchases
+        high_cost = sorted(approved_data, key=lambda x: x["final_amount"], reverse=True)[:10]
+        insights["high_cost"] = high_cost
+        
+        # Vendor-wise spend
+        vendor_spend = {}
+        total_spend = sum(item["final_amount"] for item in approved_data)
+        for item in approved_data:
+            vendor = item["vendor"][:50]
+            vendor_spend[vendor] = vendor_spend.get(vendor, 0) + item["final_amount"]
+        
+        insights["vendor_spend"] = sorted(vendor_spend.items(), key=lambda x: x[1], reverse=True)
+        insights["total_spend"] = total_spend
+        
+        # Category-wise spend
+        category_spend = {}
+        for item in approved_data:
+            category = item["item_category"][:50]
+            category_spend[category] = category_spend.get(category, 0) + item["final_amount"]
+        
+        insights["category_spend"] = sorted(category_spend.items(), key=lambda x: x[1], reverse=True)
+        insights["data"] = approved_data
+        
+        # Pending payment summary
+        pending_total = sum(item["final_amount"] for item in approved_data if item["payment_status"] == "Unpaid")
+        pending_count = sum(1 for item in approved_data if item["payment_status"] == "Unpaid")
+        insights["pending_payment"] = {"total": pending_total, "count": pending_count}
+        
+        # Generate AI Management Summary
+        insights["ai_summary"] = self._generate_ai_summary(approved_data, insights)
+        
+        # Generate cost-cutting suggestions
+        insights["suggestions"] = self._generate_cost_cutting_suggestions(approved_data, insights)
+        
+        return insights
+    
+    def _generate_ai_summary(self, data: list, insights: dict) -> str:
+        """Generate AI Management Summary with key observations."""
+        summary = []
+        
+        total_spend = insights.get("total_spend", 0)
+        total_requests = len(data)
+        
+        # Check if we're using all data or just approved
+        approved_count = sum(1 for item in data if (item["approval_status"] or "").strip().lower() in ("approved", "partial approved", "hold"))
+        if approved_count == 0:
+            summary.append(f"📊 Total requests (all statuses): {total_requests}")
+            summary.append(f"💰 Total amount (all requests): ₹{total_spend:,.2f}")
+            summary.append(f"⚠️ Note: No approved requests in cache. Showing all requests. Sync with server for latest approved data.")
+        else:
+            summary.append(f"📊 Total approved requests: {total_requests}")
+            summary.append(f"💰 Total approved amount: ₹{total_spend:,.2f}")
+        
+        # Top vendor
+        if insights.get("vendor_spend"):
+            top_vendor = insights["vendor_spend"][0]
+            vendor_pct = (top_vendor[1] / total_spend * 100) if total_spend > 0 else 0
+            summary.append(f"🏢 Top vendor: {top_vendor[0]} (₹{top_vendor[1]:,.2f}, {vendor_pct:.1f}% of total)")
+        
+        # Top category
+        if insights.get("category_spend"):
+            top_category = insights["category_spend"][0]
+            cat_pct = (top_category[1] / total_spend * 100) if total_spend > 0 else 0
+            summary.append(f"📦 Top category: {top_category[0]} (₹{top_category[1]:,.2f}, {cat_pct:.1f}% of total)")
+        
+        # Pending payments
+        pending = insights.get("pending_payment", {})
+        if pending.get("count", 0) > 0:
+            summary.append(f"⏳ Pending payments: {pending['count']} requests totaling ₹{pending['total']:,.2f}")
+        
+        # Monthly trend
+        monthly = insights.get("monthly_spend", [])
+        if len(monthly) >= 2:
+            current_month = monthly[0][1]
+            prev_month = monthly[1][1]
+            change_pct = ((current_month - prev_month) / prev_month * 100) if prev_month > 0 else 0
+            if change_pct > 0:
+                summary.append(f"📈 Monthly spend increased by {change_pct:.1f}% compared to previous month")
+            else:
+                summary.append(f"📉 Monthly spend decreased by {abs(change_pct):.1f}% compared to previous month")
+        
+        # High-value purchases
+        high_cost = insights.get("high_cost", [])
+        if high_cost:
+            max_purchase = high_cost[0]
+            summary.append(f"💎 Highest single purchase: ₹{max_purchase['final_amount']:,.2f} ({max_purchase['item_name'][:30]})")
+        
+        # Recommendation
+        if total_spend > 0:
+            summary.append(f"\n💡 Recommendation: Review vendor consolidation opportunities to potentially reduce costs by 5-10%")
+        
+        return "\n".join(summary)
+    
+    def _generate_cost_cutting_suggestions(self, data: list, insights: dict) -> str:
+        """Generate cost-cutting suggestions based on data analysis."""
+        suggestions = []
+        
+        # Vendor concentration analysis
+        vendor_spend = insights.get("vendor_spend", [])
+        total_spend = insights.get("total_spend", 0)
+        
+        if len(vendor_spend) > 0:
+            top_3_pct = sum(v[1] for v in vendor_spend[:3]) / total_spend * 100 if total_spend > 0 else 0
+            if top_3_pct > 70:
+                suggestions.append(f"⚠️ High vendor concentration: Top 3 vendors account for {top_3_pct:.1f}% of spend. Consider diversifying suppliers.")
+        
+        # High-value single purchases
+        high_cost = insights.get("high_cost", [])
+        if high_cost and len(high_cost) > 0:
+            avg_purchase = total_spend / len(data) if data else 0
+            max_purchase = high_cost[0]["final_amount"]
+            if max_purchase > avg_purchase * 5:
+                suggestions.append(f"💰 Unusually high purchase detected: ₹{max_purchase:,.2f} (5x average). Review for potential breakdown into smaller orders.")
+        
+        # Category analysis
+        category_spend = insights.get("category_spend", [])
+        if len(category_spend) > 1:
+            top_category = category_spend[0]
+            if top_category[1] > total_spend * 0.5:
+                suggestions.append(f"📦 Category concentration: {top_category[0]} accounts for {top_category[1]/total_spend*100:.1f}% of spend. Consider bulk purchasing discounts.")
+        
+        # Pending payments
+        pending = insights.get("pending_payment", {})
+        if pending.get("total", 0) > total_spend * 0.3:
+            suggestions.append(f"⏳ High pending payments: ₹{pending['total']:,.2f} ({pending['total']/total_spend*100:.1f}% of approved total). Prioritize payment processing.")
+        
+        # Monthly trend
+        monthly = insights.get("monthly_spend", [])
+        if len(monthly) >= 2:
+            current = monthly[0][1]
+            previous = monthly[1][1]
+            if current > previous * 1.3:
+                suggestions.append(f"📈 Significant spend increase: Current month spend is {current/previous*100:.0f}% of previous month. Investigate cause.")
+        
+        if not suggestions:
+            suggestions.append("✅ No immediate cost-cutting opportunities identified based on current data.")
+        
+        return "\n".join(suggestions)
+    
+    def _display_ai_insights(self, insights: dict) -> None:
+        """Display AI insights in the UI."""
+        if "error" in insights:
+            self.ai_summary_text.setText(insights["error"])
+            return
+        
+        # AI Summary
+        self.ai_summary_text.setText(insights.get("ai_summary", "No summary available"))
+        
+        # Monthly Spend
+        self.monthly_spend_table.setRowCount(0)
+        for month, amount in insights.get("monthly_spend", [])[:6]:
+            row = self.monthly_spend_table.rowCount()
+            self.monthly_spend_table.insertRow(row)
+            self.monthly_spend_table.setItem(row, 0, QTableWidgetItem(month))
+            self.monthly_spend_table.setItem(row, 1, QTableWidgetItem(f"₹{amount:,.2f}"))
+            self.monthly_spend_table.setItem(row, 2, QTableWidgetItem("—"))
+        
+        # Top Items
+        self.top_items_table.setRowCount(0)
+        for name, qty, amount in insights.get("top_items", []):
+            row = self.top_items_table.rowCount()
+            self.top_items_table.insertRow(row)
+            self.top_items_table.setItem(row, 0, QTableWidgetItem(name))
+            self.top_items_table.setItem(row, 1, QTableWidgetItem(f"{qty:.1f}"))
+            self.top_items_table.setItem(row, 2, QTableWidgetItem(f"₹{amount:,.2f}"))
+        
+        # Vendor Spend
+        self.vendor_spend_table.setRowCount(0)
+        total_spend = insights.get("total_spend", 1)
+        for vendor, amount in insights.get("vendor_spend", [])[:10]:
+            row = self.vendor_spend_table.rowCount()
+            self.vendor_spend_table.insertRow(row)
+            self.vendor_spend_table.setItem(row, 0, QTableWidgetItem(vendor))
+            self.vendor_spend_table.setItem(row, 1, QTableWidgetItem(f"₹{amount:,.2f}"))
+            self.vendor_spend_table.setItem(row, 2, QTableWidgetItem(f"{amount/total_spend*100:.1f}%"))
+        
+        # High Cost
+        self.high_cost_table.setRowCount(0)
+        for item in insights.get("high_cost", []):
+            row = self.high_cost_table.rowCount()
+            self.high_cost_table.insertRow(row)
+            self.high_cost_table.setItem(row, 0, QTableWidgetItem(str(item["id"])))
+            self.high_cost_table.setItem(row, 1, QTableWidgetItem(item["item_name"][:30]))
+            self.high_cost_table.setItem(row, 2, QTableWidgetItem(f"₹{item['final_amount']:,.2f}"))
+            self.high_cost_table.setItem(row, 3, QTableWidgetItem(item["request_date"]))
+        
+        # Category Spend
+        self.category_spend_table.setRowCount(0)
+        for category, amount in insights.get("category_spend", []):
+            row = self.category_spend_table.rowCount()
+            self.category_spend_table.insertRow(row)
+            self.category_spend_table.setItem(row, 0, QTableWidgetItem(category))
+            self.category_spend_table.setItem(row, 1, QTableWidgetItem(f"₹{amount:,.2f}"))
+            self.category_spend_table.setItem(row, 2, QTableWidgetItem(f"{amount/total_spend*100:.1f}%"))
+        
+        # Pending Payments
+        pending = insights.get("pending_payment", {})
+        pending_text = f"Total pending: ₹{pending.get('total', 0):,.2f} across {pending.get('count', 0)} requests"
+        self.pending_payment_label.setText(pending_text)
+        
+        # Suggestions
+        self.suggestions_text.setText(insights.get("suggestions", "No suggestions available"))
+
+
 class AdminPanelPySide6(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -211,6 +1006,16 @@ class AdminPanelPySide6(QMainWindow):
         
         # Session and state
         self.session = requests.Session()
+        cert_path = _resolve_ca_bundle_path()
+        if cert_path:
+            self.session.verify = cert_path
+        else:
+            self.session.verify = False
+            warnings.warn(
+                "No valid TLS CA bundle found; HTTPS verification disabled for this runtime.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         self.base_url = DEFAULT_BASE_URL
         self.username = "admin"
         self.password = "admin123"
@@ -233,6 +1038,8 @@ class AdminPanelPySide6(QMainWindow):
         self._last_server_items: list[dict] = []
         self._status_filter: str = ""
         self._comp_filter: str = ""
+        self._selected_month_filter: int = 0
+        self._selected_date_filter: str | None = None
         
         # PDF preview state
         self._pdf_pages: list = []
@@ -445,8 +1252,8 @@ class AdminPanelPySide6(QMainWindow):
             ("📊 Dashboard", "dashboard"),
             ("📋 Requests", "requests"),
             ("🧾 Bill Uploads", "bills"),
-            ("🖼 Bill Preview", "preview"),
             ("🏭 Factory Locations", "locations"),
+            ("🤖 AI Insights", "insights"),
         ]
         
         for label, page_id in nav_items:
@@ -553,13 +1360,13 @@ class AdminPanelPySide6(QMainWindow):
         search_frame.setFixedHeight(40)
         search_frame.setStyleSheet(f"""
             QFrame {{
-                background-color: {GlassColors.GLASS_BG};
-                border: 1px solid {GlassColors.BORDER_COLOR};
-                border-radius: 6px;
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 8px;
             }}
         """)
         search_layout = QHBoxLayout(search_frame)
-        search_layout.setContentsMargins(10, 4, 10, 4)
+        search_layout.setContentsMargins(12, 4, 12, 4)
         
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("🔍 Search vendor / item / ID...")
@@ -571,11 +1378,11 @@ class AdminPanelPySide6(QMainWindow):
                 padding: 4px 8px;
                 border: none;
                 border-radius: 4px;
-                font-size: 10px;
-                selection-background-color: {GlassColors.PRIMARY};
+                font-size: 11px;
+                selection-background-color: {GlassColors.PRIMARY_ACCENT};
             }}
             QLineEdit:focus {{
-                background: rgba(255, 255, 255, 0.08);
+                background: transparent;
             }}
         """)
         self.search_input.textChanged.connect(self._apply_search_filter)
@@ -608,12 +1415,12 @@ class AdminPanelPySide6(QMainWindow):
         return main_area
     
     def _build_kpi_dashboard(self, parent_layout: QVBoxLayout) -> None:
-        """Build the KPI dashboard cards."""
+        """Build the KPI dashboard cards with flattened modern styling."""
         kpi_container = QWidget()
-        kpi_container.setStyleSheet("background-color: #f3f5f7;")
+        kpi_container.setStyleSheet("background-color: transparent;")
         kpi_layout = QHBoxLayout(kpi_container)
-        kpi_layout.setContentsMargins(16, 14, 16, 8)
-        kpi_layout.setSpacing(10)
+        kpi_layout.setContentsMargins(16, 16, 16, 8)
+        kpi_layout.setSpacing(16)
         
         # KPI variables
         self.kpi_total = QLabel("—")
@@ -637,43 +1444,46 @@ class AdminPanelPySide6(QMainWindow):
         for icon_text, title_text, value_label, subtitle_text, status_color in kpi_defs:
             card = QFrame()
             card.setObjectName("KpiCard")
-            card.setMinimumHeight(96)
+            card.setMinimumHeight(100)
             card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             card.setStyleSheet(f"""
                 QFrame#KpiCard {{
-                    background: #ffffff;
-                    border: 1px solid #d8e2ec;
-                    border-left: 5px solid {status_color};
-                    border-radius: 8px;
+                    background: rgba(255, 255, 255, 0.04);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 12px;
+                }}
+                QFrame#KpiCard:hover {{
+                    background: rgba(255, 255, 255, 0.06);
+                    border: 1px solid rgba(255, 255, 255, 0.12);
                 }}
             """)
             
             card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(14, 10, 14, 10)
-            card_layout.setSpacing(5)
+            card_layout.setContentsMargins(16, 12, 16, 12)
+            card_layout.setSpacing(6)
             
             title_row = QHBoxLayout()
             title_row.setContentsMargins(0, 0, 0, 0)
-            title_row.setSpacing(6)
+            title_row.setSpacing(8)
             
             icon = QLabel(icon_text)
-            icon.setStyleSheet(f"color: {status_color}; font-size: 15px; font-weight: bold;")
-            icon.setFixedWidth(20)
+            icon.setStyleSheet(f"color: {status_color}; font-size: 16px; font-weight: bold;")
+            icon.setFixedWidth(24)
             icon.setAlignment(Qt.AlignCenter)
             title_row.addWidget(icon)
             
             title = QLabel(title_text)
-            title.setStyleSheet("color: #24364a; font-size: 10px; font-weight: 700;")
+            title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 11px; font-weight: 600;")
             title.setWordWrap(True)
             title_row.addWidget(title, 1)
             card_layout.addLayout(title_row)
             
-            value_label.setStyleSheet(f"color: {status_color}; font-size: 21px; font-weight: 800;")
+            value_label.setStyleSheet(f"color: {status_color}; font-size: 24px; font-weight: 700;")
             value_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             card_layout.addWidget(value_label)
             
             subtitle = QLabel(subtitle_text)
-            subtitle.setStyleSheet("color: #526273; font-size: 9px; font-weight: 600;")
+            subtitle.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-size: 10px; font-weight: 500;")
             subtitle.setWordWrap(True)
             card_layout.addWidget(subtitle)
             
@@ -682,33 +1492,37 @@ class AdminPanelPySide6(QMainWindow):
         parent_layout.addWidget(kpi_container)
     
     def _build_action_toolbar(self, parent_layout: QVBoxLayout) -> None:
-        """Build the action toolbar."""
-        toolbar = self._create_card()
+        """Build the action toolbar with simplified modern styling."""
+        toolbar = QFrame()
+        toolbar.setStyleSheet(f"""
+            QFrame {{
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+            }}
+        """)
         toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(8, 6, 8, 6)
-        toolbar_layout.setSpacing(4)
+        toolbar_layout.setContentsMargins(12, 10, 12, 10)
+        toolbar_layout.setSpacing(8)
         
-        def create_action_btn(text: str, color: str, hover_color: str, callback) -> QPushButton:
+        def create_action_btn(text: str, callback) -> QPushButton:
             btn = QPushButton(text)
             btn.setStyleSheet(f"""
                 QPushButton {{
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 {color},
-                        stop:1 {hover_color});
+                    background: rgba(255, 255, 255, 0.05);
                     color: {GlassColors.TEXT_PRIMARY};
-                    font-weight: bold;
-                    padding: 7px 10px;
-                    border: none;
+                    font-weight: 500;
+                    padding: 8px 14px;
+                    border: 1px solid rgba(255, 255, 255, 0.1);
                     border-radius: 6px;
-                    font-size: 9px;
+                    font-size: 10px;
                 }}
                 QPushButton:hover {{
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 {hover_color},
-                        stop:1 {GlassColors.PRIMARY_ACCENT});
+                    background: rgba(255, 255, 255, 0.1);
+                    border: 1px solid rgba(255, 255, 255, 0.2);
                 }}
                 QPushButton:pressed {{
-                    background: {color};
+                    background: rgba(255, 255, 255, 0.03);
                 }}
             """)
             btn.clicked.connect(callback)
@@ -716,70 +1530,161 @@ class AdminPanelPySide6(QMainWindow):
         
         def create_separator() -> QFrame:
             sep = QFrame()
-            sep.setStyleSheet(f"background-color: {GlassColors.BORDER_COLOR};")
+            sep.setStyleSheet(f"background-color: rgba(255, 255, 255, 0.08);")
             sep.setFixedWidth(1)
             return sep
         
-        toolbar_layout.addWidget(create_action_btn("🔄 Sync", "#0B2C5F", "#163d7a", self.sync_from_server))
+        toolbar_layout.addWidget(create_action_btn("🔄 Sync", self.sync_from_server))
         toolbar_layout.addWidget(create_separator())
-        toolbar_layout.addWidget(create_action_btn("🧾 View Bill", "#155c8a", "#1e7ab8", self.view_bill_selected))
-        toolbar_layout.addWidget(create_action_btn("📥 Download", "#155c8a", "#1e7ab8", self.download_bill_selected))
+        toolbar_layout.addWidget(create_action_btn("✅ Approve", self.approve_selected))
+        toolbar_layout.addWidget(create_action_btn("❌ Reject", self.reject_selected))
+        toolbar_layout.addWidget(create_action_btn("⏸ Partial Approved", self.hold_selected))
         toolbar_layout.addWidget(create_separator())
-        toolbar_layout.addWidget(create_action_btn("✅ Approve", "#166534", "#15803d", self.approve_selected))
-        toolbar_layout.addWidget(create_action_btn("❌ Reject", "#991b1b", "#b91c1c", self.reject_selected))
-        toolbar_layout.addWidget(create_action_btn("⏸ Partial Approved", "#9a3412", "#c2410c", self.hold_selected))
+        toolbar_layout.addWidget(create_action_btn("🔒 Verify & Close", self.verify_selected))
+        toolbar_layout.addWidget(create_action_btn("↩ Reopen", self.reopen_selected))
         toolbar_layout.addWidget(create_separator())
-        toolbar_layout.addWidget(create_action_btn("🔒 Verify & Close", "#065f46", "#047857", self.verify_selected))
-        toolbar_layout.addWidget(create_action_btn("↩ Reopen", "#7c2d12", "#9a3412", self.reopen_selected))
+        toolbar_layout.addWidget(create_action_btn("🗑 Delete", self.delete_selected))
         toolbar_layout.addWidget(create_separator())
-        toolbar_layout.addWidget(create_action_btn("🗑 Delete", "#6b1e1e", "#7f1d1d", self.delete_selected))
-        toolbar_layout.addWidget(create_separator())
-        toolbar_layout.addWidget(create_action_btn("📊 Export Excel", "#3b0764", "#5b21b6", self.export_local_excel))
+        toolbar_layout.addWidget(create_action_btn("📊 Export Excel", self.export_local_excel))
+
+        month_label = QLabel("Month")
+        month_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-size: 10px; font-weight: 500;")
+        toolbar_layout.addWidget(month_label)
+
+        self.month_filter_combo = QComboBox()
+        self.month_filter_combo.setFixedHeight(28)
+        self.month_filter_combo.setFixedWidth(92)
+        self.month_filter_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: rgba(255, 255, 255, 0.05);
+                color: {GlassColors.TEXT_PRIMARY};
+                padding: 4px 8px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 6px;
+                font-size: 10px;
+            }}
+            QComboBox:hover {{
+                border: 1px solid rgba(255, 255, 255, 0.15);
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 24px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 4px solid {GlassColors.TEXT_SECONDARY};
+            }}
+        """)
+        self.month_filter_combo.addItem("All", 0)
+        for idx, name in enumerate(("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), start=1):
+            self.month_filter_combo.addItem(name, idx)
+        self.month_filter_combo.currentIndexChanged.connect(self._apply_date_month_filter)
+        toolbar_layout.addWidget(self.month_filter_combo)
+
+        date_label = QLabel("Date")
+        date_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-size: 10px; font-weight: 500;")
+        toolbar_layout.addWidget(date_label)
+
+        self.date_filter_edit = QDateEdit()
+        self.date_filter_edit.setCalendarPopup(True)
+        self.date_filter_edit.setDisplayFormat("yyyy-MM-dd")
+        self._date_filter_min = QDate(2000, 1, 1)
+        self.date_filter_edit.setMinimumDate(self._date_filter_min)
+        self.date_filter_edit.setDate(self._date_filter_min)
+        self.date_filter_edit.setSpecialValueText("All")
+        self.date_filter_edit.setFixedHeight(28)
+        self.date_filter_edit.setFixedWidth(112)
+        self.date_filter_edit.setStyleSheet(f"""
+            QDateEdit {{
+                background: rgba(255, 255, 255, 0.05);
+                color: {GlassColors.TEXT_PRIMARY};
+                padding: 4px 8px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 6px;
+                font-size: 10px;
+            }}
+            QDateEdit:hover {{
+                border: 1px solid rgba(255, 255, 255, 0.15);
+            }}
+        """)
+        self.date_filter_edit.dateChanged.connect(self._apply_date_month_filter)
+        toolbar_layout.addWidget(self.date_filter_edit)
+
+        clear_filters_btn = QPushButton("Clear")
+        clear_filters_btn.setFixedHeight(28)
+        clear_filters_btn.setFixedWidth(60)
+        clear_filters_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 255, 255, 0.05);
+                color: {GlassColors.TEXT_PRIMARY};
+                font-weight: 500;
+                padding: 4px 12px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 6px;
+                font-size: 10px;
+            }}
+            QPushButton:hover {{
+                background: rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            }}
+        """)
+        clear_filters_btn.clicked.connect(self._clear_date_month_filters)
+        toolbar_layout.addWidget(clear_filters_btn)
         
         toolbar_layout.addStretch()
         
         parent_layout.addWidget(toolbar)
     
     def _build_filter_bar(self, parent_layout: QVBoxLayout) -> None:
-        """Build the filter bar with status and completion filters."""
+        """Build the filter bar with status and completion filters with modern styling."""
         # Status filter
-        status_filter = self._create_card()
+        status_filter = QFrame()
+        status_filter.setStyleSheet(f"""
+            QFrame {{
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+            }}
+        """)
         status_layout = QHBoxLayout(status_filter)
-        status_layout.setContentsMargins(12, 5, 12, 5)
-        status_layout.setSpacing(4)
+        status_layout.setContentsMargins(12, 8, 12, 8)
+        status_layout.setSpacing(8)
         
         status_label = QLabel("STATUS")
-        status_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-size: 8px; font-weight: bold;")
+        status_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-size: 10px; font-weight: 500;")
         status_layout.addWidget(status_label)
         
         self._filter_btns: dict[str, QPushButton] = {}
         filter_opts = [
-            ("  All  ", "", GlassColors.GLASS_BG, GlassColors.TEXT_PRIMARY, GlassColors.PRIMARY_ACCENT, GlassColors.TEXT_PRIMARY),
-            ("  Pending  ", "Pending", GlassColors.GLASS_BG, GlassColors.TEXT_PRIMARY, GlassColors.STATUS_PENDING, GlassColors.TEXT_PRIMARY),
-            ("  Approved  ", "Approved", GlassColors.GLASS_BG, GlassColors.TEXT_PRIMARY, GlassColors.STATUS_APPROVED, GlassColors.TEXT_PRIMARY),
-            ("  Rejected  ", "Rejected", GlassColors.GLASS_BG, GlassColors.TEXT_PRIMARY, GlassColors.STATUS_REJECTED, GlassColors.TEXT_PRIMARY),
-            ("  Partial Approved  ", "Partial Approved", GlassColors.GLASS_BG, GlassColors.TEXT_PRIMARY, GlassColors.STATUS_PARTIAL, GlassColors.TEXT_PRIMARY),
+            ("All", "", GlassColors.PRIMARY_ACCENT),
+            ("Pending", "Pending", GlassColors.STATUS_PENDING),
+            ("Approved", "Approved", GlassColors.STATUS_APPROVED),
+            ("Rejected", "Rejected", GlassColors.STATUS_REJECTED),
+            ("Partial Approved", "Partial Approved", GlassColors.STATUS_PARTIAL),
         ]
         
-        for label, value, nbg, nfg, abg, afg in filter_opts:
+        for label, value, accent_color in filter_opts:
             btn = QPushButton(label)
             btn.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: {nbg};
-                    color: {nfg};
-                    font-weight: bold;
-                    padding: 5px 4px;
-                    border: 1px solid {GlassColors.BORDER_COLOR};
+                    background: rgba(255, 255, 255, 0.05);
+                    color: {GlassColors.TEXT_PRIMARY};
+                    font-weight: 500;
+                    padding: 6px 12px;
+                    border: 1px solid rgba(255, 255, 255, 0.1);
                     border-radius: 6px;
-                    font-size: 9px;
+                    font-size: 10px;
                 }}
                 QPushButton:hover {{
-                    background-color: {abg};
-                    color: {afg};
+                    background: rgba(255, 255, 255, 0.1);
+                    border: 1px solid rgba(255, 255, 255, 0.2);
                 }}
                 QPushButton:checked {{
-                    background-color: {abg};
-                    color: {afg};
+                    background: rgba(255, 255, 255, 0.15);
+                    border: 1px solid {accent_color};
+                    color: {accent_color};
                 }}
             """)
             btn.setCheckable(True)
@@ -792,43 +1697,51 @@ class AdminPanelPySide6(QMainWindow):
         parent_layout.addWidget(status_filter)
         
         # Completion filter
-        comp_filter = self._create_card()
+        comp_filter = QFrame()
+        comp_filter.setStyleSheet(f"""
+            QFrame {{
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+            }}
+        """)
         comp_layout = QHBoxLayout(comp_filter)
-        comp_layout.setContentsMargins(12, 4, 12, 4)
-        comp_layout.setSpacing(4)
+        comp_layout.setContentsMargins(12, 8, 12, 8)
+        comp_layout.setSpacing(8)
         
         comp_label = QLabel("COMPLETION")
-        comp_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-size: 8px; font-weight: bold;")
+        comp_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-size: 10px; font-weight: 500;")
         comp_layout.addWidget(comp_label)
         
         self._comp_filter_btns: dict[str, QPushButton] = {}
         comp_opts = [
-            ("  All  ", "", GlassColors.GLASS_BG, GlassColors.TEXT_PRIMARY, GlassColors.PRIMARY_ACCENT, GlassColors.TEXT_PRIMARY),
-            ("  Pending  ", "Pending", GlassColors.GLASS_BG, GlassColors.TEXT_PRIMARY, GlassColors.STATUS_PENDING, GlassColors.TEXT_PRIMARY),
-            ("  Awaiting Compl.  ", "Awaiting Completion", GlassColors.GLASS_BG, GlassColors.TEXT_PRIMARY, GlassColors.STATUS_PARTIAL, GlassColors.TEXT_PRIMARY),
-            ("  Compl. Submitted  ", "Completion Submitted", GlassColors.GLASS_BG, GlassColors.TEXT_PRIMARY, GlassColors.STATUS_SUBMITTED, GlassColors.TEXT_PRIMARY),
-            ("  Closed  ", "Closed", GlassColors.GLASS_BG, GlassColors.TEXT_PRIMARY, GlassColors.STATUS_CLOSED, GlassColors.TEXT_PRIMARY),
+            ("All", "", GlassColors.PRIMARY_ACCENT),
+            ("Pending", "Pending", GlassColors.STATUS_PENDING),
+            ("Awaiting Completion", "Awaiting Completion", GlassColors.STATUS_PARTIAL),
+            ("Completion Submitted", "Completion Submitted", GlassColors.STATUS_SUBMITTED),
+            ("Closed", "Closed", GlassColors.STATUS_CLOSED),
         ]
         
-        for label, value, nbg, nfg, abg, afg in comp_opts:
+        for label, value, accent_color in comp_opts:
             btn = QPushButton(label)
             btn.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: {nbg};
-                    color: {nfg};
-                    font-weight: bold;
-                    padding: 4px 4px;
-                    border: 1px solid {GlassColors.BORDER_COLOR};
+                    background: rgba(255, 255, 255, 0.05);
+                    color: {GlassColors.TEXT_PRIMARY};
+                    font-weight: 500;
+                    padding: 6px 12px;
+                    border: 1px solid rgba(255, 255, 255, 0.1);
                     border-radius: 6px;
-                    font-size: 9px;
+                    font-size: 10px;
                 }}
                 QPushButton:hover {{
-                    background-color: {abg};
-                    color: {afg};
+                    background: rgba(255, 255, 255, 0.1);
+                    border: 1px solid rgba(255, 255, 255, 0.2);
                 }}
                 QPushButton:checked {{
-                    background-color: {abg};
-                    color: {afg};
+                    background: rgba(255, 255, 255, 0.15);
+                    border: 1px solid {accent_color};
+                    color: {accent_color};
                 }}
             """)
             btn.setCheckable(True)
@@ -844,42 +1757,37 @@ class AdminPanelPySide6(QMainWindow):
         self.requests_page = QWidget()
         self._build_requests_page()
         self.pages_container.addWidget(self.requests_page)
-        
+
         # Bills page
         self.bills_page = QWidget()
         self._build_bills_page()
         self.pages_container.addWidget(self.bills_page)
-        
+
         # Preview page
         self.preview_page = QWidget()
         self._build_preview_page()
         self.pages_container.addWidget(self.preview_page)
-        
+
         # Locations page
         self.locations_page = QWidget()
         self._build_locations_page()
         self.pages_container.addWidget(self.locations_page)
-        
+
         # Dashboard page
         self.dashboard_page = QWidget()
         self._build_dashboard_page()
         self.pages_container.addWidget(self.dashboard_page)
-        
+
         # Show initial page
         self._switch_page("requests")
     
     def _build_requests_page(self) -> None:
-        """Build the requests table page."""
+        """Build the requests table page with modern styling."""
         layout = QVBoxLayout(self.requests_page)
-        layout.setContentsMargins(14, 6, 14, 6)
+        layout.setContentsMargins(16, 8, 16, 8)
         layout.setSpacing(0)
         
-        # Table
-        table_card = self._create_card()
-        table_layout = QVBoxLayout(table_card)
-        table_layout.setContentsMargins(0, 0, 0, 0)
-        table_layout.setSpacing(0)
-        
+        # Table with modern styling
         self.requests_table = QTableWidget()
         self.requests_table.setColumnCount(13)
         self.requests_table.setHorizontalHeaderLabels([
@@ -887,7 +1795,40 @@ class AdminPanelPySide6(QMainWindow):
             "Paid (₹)", "Balance (₹)", "Requested By", "Approval",
             "Payment", "Completion", "Updated At"
         ])
-        self.requests_table.setStyleSheet(GlassStyles.table_style())
+        self.requests_table.setStyleSheet(f"""
+            QTableWidget {{
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                gridline-color: rgba(255, 255, 255, 0.05);
+                color: {GlassColors.TEXT_PRIMARY};
+                font-size: 11px;
+            }}
+            QTableWidget::item {{
+                padding: 8px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            }}
+            QTableWidget::item:selected {{
+                background: rgba(74, 144, 226, 0.2);
+                color: {GlassColors.TEXT_PRIMARY};
+            }}
+            QTableWidget::item:hover {{
+                background: rgba(255, 255, 255, 0.04);
+            }}
+            QHeaderView::section {{
+                background: rgba(255, 255, 255, 0.06);
+                color: {GlassColors.TEXT_PRIMARY};
+                padding: 10px 8px;
+                border: none;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                font-weight: 600;
+                font-size: 10px;
+            }}
+            QTableCornerButton::section {{
+                background: rgba(255, 255, 255, 0.06);
+                border: none;
+            }}
+        """)
         
         # Set column widths
         self.requests_table.setColumnWidth(0, 55)   # ID
@@ -910,26 +1851,54 @@ class AdminPanelPySide6(QMainWindow):
         self.requests_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.requests_table.doubleClicked.connect(self._on_table_double_click)
         
-        table_layout.addWidget(self.requests_table)
-        layout.addWidget(table_card, 1)
+        layout.addWidget(self.requests_table, 1)
     
     def _build_bills_page(self) -> None:
-        """Build the bills table page."""
+        """Build the bills table page with modern styling."""
         layout = QVBoxLayout(self.bills_page)
-        layout.setContentsMargins(14, 6, 14, 6)
+        layout.setContentsMargins(16, 8, 16, 8)
         layout.setSpacing(0)
         
-        # Table
-        table_card = self._create_card()
-        table_layout = QVBoxLayout(table_card)
-        table_layout.setContentsMargins(0, 0, 0, 0)
-        
+        # Table with modern styling
         self.bills_table = QTableWidget()
         self.bills_table.setColumnCount(7)
         self.bills_table.setHorizontalHeaderLabels([
             "ID", "Date", "Factory", "Vendor", "Uploaded By", "Status", "Updated At"
         ])
-        self.bills_table.setStyleSheet(GlassStyles.table_style())
+        self.bills_table.setStyleSheet(f"""
+            QTableWidget {{
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                gridline-color: rgba(255, 255, 255, 0.05);
+                color: {GlassColors.TEXT_PRIMARY};
+                font-size: 11px;
+            }}
+            QTableWidget::item {{
+                padding: 8px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            }}
+            QTableWidget::item:selected {{
+                background: rgba(74, 144, 226, 0.2);
+                color: {GlassColors.TEXT_PRIMARY};
+            }}
+            QTableWidget::item:hover {{
+                background: rgba(255, 255, 255, 0.04);
+            }}
+            QHeaderView::section {{
+                background: rgba(255, 255, 255, 0.06);
+                color: {GlassColors.TEXT_PRIMARY};
+                padding: 10px 8px;
+                border: none;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                font-weight: 600;
+                font-size: 10px;
+            }}
+            QTableCornerButton::section {{
+                background: rgba(255, 255, 255, 0.06);
+                border: none;
+            }}
+        """)
         
         # Set column widths
         self.bills_table.setColumnWidth(0, 70)   # ID
@@ -945,18 +1914,23 @@ class AdminPanelPySide6(QMainWindow):
         self.bills_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.bills_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.bills_table.doubleClicked.connect(self._on_bills_table_double_click)
-        
-        table_layout.addWidget(self.bills_table)
-        layout.addWidget(table_card, 1)
+        layout.addWidget(self.bills_table, 1)
     
     def _build_preview_page(self) -> None:
-        """Build the bill preview page."""
+        """Build the bill preview page with modern styling."""
         layout = QVBoxLayout(self.preview_page)
-        layout.setContentsMargins(14, 6, 14, 6)
-        layout.setSpacing(6)
+        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setSpacing(12)
         
         # Top bar
-        top_bar = self._create_card()
+        top_bar = QFrame()
+        top_bar.setStyleSheet(f"""
+            QFrame {{
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+            }}
+        """)
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(10, 8, 10, 8)
         
@@ -984,7 +1958,7 @@ class AdminPanelPySide6(QMainWindow):
         
         load_btn = QPushButton("Load Bill")
         load_btn.setStyleSheet(GlassStyles.button_primary_style())
-        load_btn.clicked.connect(self.view_bill_selected)
+        load_btn.clicked.connect(self.download_bill_selected)
         top_layout.addWidget(load_btn)
         
         download_btn = QPushButton("Download")
@@ -1005,13 +1979,20 @@ class AdminPanelPySide6(QMainWindow):
         layout.addWidget(top_bar)
         
         # Payment summary section
-        self.summary_card = self._create_card()
+        self.summary_card = QFrame()
+        self.summary_card.setStyleSheet(f"""
+            QFrame {{
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+            }}
+        """)
         summary_layout = QVBoxLayout(self.summary_card)
         summary_layout.setContentsMargins(12, 10, 12, 10)
         summary_layout.setSpacing(8)
         
         summary_title = QLabel("Payment Summary")
-        summary_title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 12px; font-weight: bold;")
+        summary_title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 12px; font-weight: 600;")
         summary_layout.addWidget(summary_title)
         
         self.summary_content = QLabel("No payment summary loaded")
@@ -1024,18 +2005,25 @@ class AdminPanelPySide6(QMainWindow):
         layout.addWidget(self.summary_card)
         
         # Preview canvas
-        preview_card = self._create_card()
+        preview_card = QFrame()
+        preview_card.setStyleSheet(f"""
+            QFrame {{
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+            }}
+        """)
         preview_layout = QVBoxLayout(preview_card)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         
         self.preview_scroll = QScrollArea()
         self.preview_scroll.setWidgetResizable(False)
-        self.preview_scroll.setStyleSheet(f"background-color: {GlassColors.GLASS_BG}; border: none;")
+        self.preview_scroll.setStyleSheet(f"background: rgba(255, 255, 255, 0.02); border: none;")
         self.preview_scroll.viewport().installEventFilter(self)
         
         self.preview_label = QLabel()
         self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setStyleSheet(f"background-color: {GlassColors.GLASS_BG};")
+        self.preview_label.setStyleSheet(f"background: rgba(255, 255, 255, 0.02);")
         self.preview_label.setMinimumSize(800, 1100)
         self.preview_scroll.setWidget(self.preview_label)
         
@@ -1043,48 +2031,57 @@ class AdminPanelPySide6(QMainWindow):
         layout.addWidget(preview_card, 1)
     
     def _build_locations_page(self) -> None:
-        """Build the factory locations page."""
+        """Build the factory locations page with modern styling."""
         layout = QVBoxLayout(self.locations_page)
-        layout.setContentsMargins(14, 6, 14, 6)
-        layout.setSpacing(6)
+        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setSpacing(12)
         
         # Top bar
-        top_bar = self._create_card()
+        top_bar = QFrame()
+        top_bar.setStyleSheet(f"""
+            QFrame {{
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+            }}
+        """)
         top_layout = QGridLayout(top_bar)
         top_layout.setContentsMargins(12, 8, 12, 8)
         top_layout.setSpacing(8)
         
         factory_label = QLabel("Factory Name")
-        factory_label.setStyleSheet("color: #334155; font-weight: bold; font-size: 10px;")
+        factory_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-weight: 500; font-size: 10px;")
         top_layout.addWidget(factory_label, 0, 0)
         
         self.factory_name_display = QLineEdit()
         self.factory_name_display.setReadOnly(True)
-        self.factory_name_display.setStyleSheet("""
-            QLineEdit {
+        self.factory_name_display.setStyleSheet(f"""
+            QLineEdit {{
+                background: rgba(255, 255, 255, 0.03);
+                color: {GlassColors.TEXT_PRIMARY};
                 padding: 6px 10px;
-                border: 1px solid #cbd5e1;
-                border-radius: 4px;
-                background-color: #f8fafc;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 6px;
                 font-size: 10px;
-            }
+            }}
         """)
         top_layout.addWidget(self.factory_name_display, 1, 0)
         
         location_label = QLabel("Location (lat,long,radius)")
-        location_label.setStyleSheet("color: #334155; font-weight: bold; font-size: 10px;")
+        location_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-weight: 500; font-size: 10px;")
         top_layout.addWidget(location_label, 0, 1)
         
         self.factory_location_input = QLineEdit()
         self.factory_location_input.setPlaceholderText("12.9716,77.5946,250")
-        self.factory_location_input.setStyleSheet("""
-            QLineEdit {
+        self.factory_location_input.setStyleSheet(f"""
+            QLineEdit {{
+                background: rgba(255, 255, 255, 0.05);
+                color: {GlassColors.TEXT_PRIMARY};
                 padding: 6px 10px;
-                border: 1px solid #cbd5e1;
-                border-radius: 4px;
-                background-color: white;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 6px;
                 font-size: 10px;
-            }
+            }}
         """)
         top_layout.addWidget(self.factory_location_input, 1, 1)
         
@@ -1102,15 +2099,44 @@ class AdminPanelPySide6(QMainWindow):
         
         layout.addWidget(top_bar)
         
-        # Table
-        table_card = self._create_card()
-        table_layout = QVBoxLayout(table_card)
-        table_layout.setContentsMargins(0, 0, 0, 0)
-        
+        # Table with modern styling
         self.factory_table = QTableWidget()
         self.factory_table.setColumnCount(4)
         self.factory_table.setHorizontalHeaderLabels(["ID", "Factory", "Location", "Preview"])
-        self.factory_table.setStyleSheet(GlassStyles.table_style())
+        self.factory_table.setStyleSheet(f"""
+            QTableWidget {{
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                gridline-color: rgba(255, 255, 255, 0.05);
+                color: {GlassColors.TEXT_PRIMARY};
+                font-size: 11px;
+            }}
+            QTableWidget::item {{
+                padding: 8px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            }}
+            QTableWidget::item:selected {{
+                background: rgba(74, 144, 226, 0.2);
+                color: {GlassColors.TEXT_PRIMARY};
+            }}
+            QTableWidget::item:hover {{
+                background: rgba(255, 255, 255, 0.04);
+            }}
+            QHeaderView::section {{
+                background: rgba(255, 255, 255, 0.06);
+                color: {GlassColors.TEXT_PRIMARY};
+                padding: 10px 8px;
+                border: none;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                font-weight: 600;
+                font-size: 10px;
+            }}
+            QTableCornerButton::section {{
+                background: rgba(255, 255, 255, 0.06);
+                border: none;
+            }}
+        """)
         
         self.factory_table.setColumnWidth(0, 70)    # ID
         self.factory_table.setColumnWidth(1, 220)   # Factory
@@ -1123,19 +2149,25 @@ class AdminPanelPySide6(QMainWindow):
         self.factory_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.factory_table.itemSelectionChanged.connect(self.on_factory_row_select)
         
-        table_layout.addWidget(self.factory_table)
-        layout.addWidget(table_card, 1)
+        layout.addWidget(self.factory_table, 1)
     
     def _build_dashboard_page(self) -> None:
-        """Build the dashboard overview page."""
+        """Build the dashboard overview page with modern styling."""
         layout = QVBoxLayout(self.dashboard_page)
-        layout.setContentsMargins(14, 6, 14, 6)
-        layout.setSpacing(6)
+        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setSpacing(12)
         
         # Dashboard content
-        dashboard_card = self._create_card()
+        dashboard_card = QFrame()
+        dashboard_card.setStyleSheet(f"""
+            QFrame {{
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+            }}
+        """)
         dashboard_layout = QVBoxLayout(dashboard_card)
-        dashboard_layout.setContentsMargins(16, 16, 16, 16)
+        dashboard_layout.setContentsMargins(24, 24, 24, 24)
         
         title = QLabel("📊 Dashboard Overview")
         title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 16px; font-weight: bold;")
@@ -1148,7 +2180,7 @@ class AdminPanelPySide6(QMainWindow):
         dashboard_layout.addStretch()
         
         # Stats summary
-        stats_label = QLabel("Use the navigation sidebar to manage purchase requests, view bills, and configure factory locations.")
+        stats_label = QLabel("Use the navigation sidebar to manage purchase requests, download bills, and configure factory locations.")
         stats_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-size: 11px;")
         stats_label.setWordWrap(True)
         dashboard_layout.addWidget(stats_label)
@@ -1178,8 +2210,9 @@ class AdminPanelPySide6(QMainWindow):
             "dashboard": "📊 Dashboard Overview",
             "requests": "📋 Purchase Requests",
             "bills": "🧾 Bill Uploads",
-            "preview": "🖼 Bill Preview",
+            "preview": "🧾 Bill Preview",
             "locations": "🏭 Factory Locations",
+            "insights": "🤖 AI Insights",
         }
         
         self.page_title.setText(page_titles.get(page_id, page_id.title()))
@@ -1198,12 +2231,28 @@ class AdminPanelPySide6(QMainWindow):
             "locations": 3,
             "dashboard": 4,
         }
+        
+        # Special handling for AI Insights - open as dialog
+        if page_id == "insights":
+            self._open_ai_insights_dialog()
+            return
+        
         self.pages_container.setCurrentIndex(page_map.get(page_id, 0))
     
     def _update_nav_active(self, active: str) -> None:
         """Update navigation active state."""
         for pid, btn in self._nav_btns.items():
             btn.setChecked(pid == active)
+    
+    def _open_ai_insights_dialog(self) -> None:
+        """Open the AI Insights dialog with server items."""
+        # Sync with server if no data available
+        if not self._last_server_items:
+            print("[AI Insights] No server items available, triggering sync...")
+            self.sync_data()
+        
+        dialog = AIInsightsDialog(self, self._last_server_items)
+        dialog.exec()
     
     # ==================== BUSINESS LOGIC METHODS ====================
     # These methods are preserved from the original Tkinter implementation
@@ -1369,6 +2418,8 @@ class AdminPanelPySide6(QMainWindow):
                     first_new_bill_added = True
             else:
                 # Regular requests
+                if not self._match_item_date_filters(it):
+                    continue
                 approval_status = (it.get("approval_status") or "").strip()
                 if approval_status == "Hold":
                     approval_status = "Partial Approved"
@@ -1449,6 +2500,40 @@ class AdminPanelPySide6(QMainWindow):
         for v, btn in self._comp_filter_btns.items():
             btn.setChecked(v == value)
         self._populate_from_server_items(self._last_server_items)
+
+    def _apply_date_month_filter(self) -> None:
+        """Apply compact month/date filters from the action toolbar."""
+        self._selected_month_filter = int(self.month_filter_combo.currentData() or 0)
+        picked = self.date_filter_edit.date().toString("yyyy-MM-dd")
+        min_text = self._date_filter_min.toString("yyyy-MM-dd")
+        self._selected_date_filter = None if picked == min_text else picked
+        self._populate_from_server_items(self._last_server_items)
+
+    def _clear_date_month_filters(self) -> None:
+        """Clear date and month filters."""
+        self.month_filter_combo.setCurrentIndex(0)
+        self.date_filter_edit.setDate(self._date_filter_min)
+        self._selected_month_filter = 0
+        self._selected_date_filter = None
+        self._populate_from_server_items(self._last_server_items)
+
+    def _match_item_date_filters(self, item: dict) -> bool:
+        """Return True when a request item matches selected month/date filters."""
+        if not self._selected_month_filter and not self._selected_date_filter:
+            return True
+        raw = str(item.get("request_date") or "").strip()
+        if not raw:
+            return False
+        date_text = raw.split("T", 1)[0].split(" ", 1)[0]
+        try:
+            dt = datetime.strptime(date_text, "%Y-%m-%d")
+        except Exception:
+            return False
+        if self._selected_month_filter and dt.month != self._selected_month_filter:
+            return False
+        if self._selected_date_filter and date_text != self._selected_date_filter:
+            return False
+        return True
     
     def _highlight_filter_btn(self, active: str) -> None:
         """Highlight active filter button."""
@@ -1457,7 +2542,11 @@ class AdminPanelPySide6(QMainWindow):
     
     def _update_stats_bar(self, items: list[dict]) -> None:
         """Update KPI statistics."""
-        non_bills = [x for x in items if not self._is_simple_bill_upload_item(x)]
+        non_bills = [
+            x
+            for x in items
+            if not self._is_simple_bill_upload_item(x) and self._match_item_date_filters(x)
+        ]
         total = len(non_bills)
         pending = sum(1 for x in non_bills if (x.get("approval_status") or "") == "Pending")
         approved = sum(1 for x in non_bills if (x.get("approval_status") or "") == "Approved")
@@ -1689,20 +2778,67 @@ class AdminPanelPySide6(QMainWindow):
             traceback.print_exc()
             QMessageBox.critical(self, "Request Summary", f"Failed to open request summary: {exc}")
     
-    def _on_bills_table_double_click(self, item: QTableWidgetItem) -> None:
-        """Handle bills table double-click to view bill preview."""
+    def _show_bill_action_popup(self, req_id: int) -> None:
+        """Show a compact popup with bill actions for a selected request."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Bill Actions - #{req_id}")
+        dialog.setModal(True)
+        dialog.resize(260, 140)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        title = QLabel(f"Request #{req_id}")
+        title.setStyleSheet("color: #e2e8f0; font-size: 12px; font-weight: 600;")
+        layout.addWidget(title)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(8)
+
+        view_btn = QPushButton("View")
+        view_btn.setStyleSheet(GlassStyles.button_primary_style())
+        view_btn.clicked.connect(lambda: (dialog.accept(), self._open_bill_in_separate_window(req_id)))
+        button_row.addWidget(view_btn)
+
+        download_btn = QPushButton("Download")
+        download_btn.setStyleSheet(GlassStyles.button_secondary_style())
+        download_btn.clicked.connect(lambda: (dialog.accept(), self._download_bill_as_pdf(req_id, self)))
+        button_row.addWidget(download_btn)
+
+        layout.addLayout(button_row)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(GlassStyles.button_secondary_style())
+        cancel_btn.clicked.connect(dialog.reject)
+        layout.addWidget(cancel_btn, 0, Qt.AlignRight)
+
+        dialog.exec()
+
+    def _on_bills_table_double_click(self, item: QTableWidgetItem | None) -> None:
+        """Handle bills table double-click by showing bill actions."""
+        if item is None:
+            return
         row = item.row()
-        req_id = int(self.bills_table.item(row, 0).text())
+        if row < 0:
+            return
+        id_item = self.bills_table.item(row, 0)
+        if id_item is None:
+            return
+        try:
+            req_id = int(id_item.text())
+        except (TypeError, ValueError):
+            return
         self.bills_table.clearSelection()
         self.bills_table.selectRow(row)
-        self._view_bill_for_request(req_id)
+        self._show_bill_action_popup(req_id)
     
     def approve_selected(self) -> None:
         """Approve selected request."""
         req_id = self.selected_request_id()
         if req_id is None:
             return
-        self.open_approve_dialog(req_id)
+        self.open_partial_approve_dialog(req_id)
 
     def open_approve_dialog(self, req_id: int) -> None:
         """Open approve dialog with amount and remarks."""
@@ -1882,48 +3018,10 @@ class AdminPanelPySide6(QMainWindow):
         """Get expected delete password."""
         return (os.getenv("ADMIN_DELETE_PASSWORD") or self.password_input.text() or "").strip()
     
-    def view_bill_selected(self) -> None:
-        """View bill for selected request."""
-        req_id = self.selected_request_id_any()
-        if req_id is None:
-            return
-        self._view_bill_for_request(req_id, open_in_window=True)
 
-    def _view_bill_for_request(self, req_id: int, open_in_window: bool = False) -> None:
-        """View bill for a specific request ID."""
-        path = (self.bill_paths.get(req_id) or "").strip()
-        if not path:
-            QMessageBox.information(self, "Bill", "No bill file attached for this request.")
-            return
-
-        if req_id == self.preview_req_id and self.preview_label.pixmap() is not None:
-            self.preview_status.setText(f"Previewing request #{req_id} - {self.preview_filename}")
-            self._switch_page("preview")
-            if open_in_window:
-                self._open_full_bill_view()
-            return
-
-        self._open_bill_in_window_for_req = req_id if open_in_window else None
-
-        self.preview_req_id = req_id
-        self.preview_filename = ""
-        self.preview_label.clear()
-        self.summary_content.setText("Loading payment summary...")
-        self.preview_status.setText(f"Loading bill for request #{req_id}...")
-        self._show_preview_message("Loading bill from server...")
-        self._switch_page("preview")
-
-        if self._bill_loader and self._bill_loader.isRunning():
-            self._bill_loader.requestInterruption()
-            self._bill_loader.wait(500)
-
-        self._bill_loader = BillFetchThread(self, req_id)
-        self._bill_loader.loaded.connect(self._on_bill_loaded)
-        self._bill_loader.failed.connect(self._on_bill_failed)
-        self._bill_loader.start()
-        
-        # Load payment summary
-        self._load_payment_summary(req_id)
+    def _view_bill_for_request(self, req_id: int, open_in_window: bool = True) -> None:
+        """View bill for a specific request ID in a separate window without changing main window page."""
+        self._open_bill_in_separate_window(req_id)
 
     def _on_bill_loaded(self, req_id: int, content: bytes, filename: str, content_type: str) -> None:
         """Render a fetched bill on the UI thread."""
@@ -2136,6 +3234,233 @@ class AdminPanelPySide6(QMainWindow):
         full_label.setPixmap(self._preview_source_pixmap)
         scroll.setWidget(full_label)
         layout.addWidget(scroll)
+
+        dialog.showMaximized()
+        dialog.exec()
+
+    def _open_bill_in_separate_window(self, req_id: int) -> None:
+        """Open bill for a specific request in a dedicated viewer window without altering main page."""
+        path = (self.bill_paths.get(req_id) or "").strip()
+        if not path:
+            QMessageBox.information(self, "Bill", "No bill file attached for this request.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Bill View - Request #{req_id}")
+        dialog.resize(1100, 800)
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #0f172a;
+                color: #f8fafc;
+            }
+        """)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        # Header toolbar
+        toolbar = QFrame()
+        toolbar.setStyleSheet("""
+            QFrame {
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 8px;
+            }
+        """)
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(12, 8, 12, 8)
+        toolbar_layout.setSpacing(10)
+
+        title_info = QLabel(f"Request #{req_id}")
+        title_info.setStyleSheet("color: #38bdf8; font-size: 13px; font-weight: bold;")
+        toolbar_layout.addWidget(title_info)
+
+        status_label = QLabel("Loading bill from server...")
+        status_label.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        toolbar_layout.addWidget(status_label, 1)
+
+        rotate_left_btn = QPushButton("↺ Rotate Left")
+        rotate_left_btn.setStyleSheet(GlassStyles.button_secondary_style())
+        rotate_right_btn = QPushButton("↻ Rotate Right")
+        rotate_right_btn.setStyleSheet(GlassStyles.button_secondary_style())
+        zoom_in_btn = QPushButton("🔍 Zoom In")
+        zoom_in_btn.setStyleSheet(GlassStyles.button_secondary_style())
+        zoom_out_btn = QPushButton("🔍 Zoom Out")
+        zoom_out_btn.setStyleSheet(GlassStyles.button_secondary_style())
+        download_btn = QPushButton("📥 Download PDF")
+        download_btn.setStyleSheet(GlassStyles.button_primary_style())
+        download_btn.clicked.connect(lambda: self._download_bill_as_pdf(req_id, dialog))
+
+        for btn in (rotate_left_btn, rotate_right_btn, zoom_in_btn, zoom_out_btn, download_btn):
+            toolbar_layout.addWidget(btn)
+
+        layout.addWidget(toolbar)
+
+        content_container = QWidget()
+        content_layout = QVBoxLayout(content_container)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(content_container, 1)
+
+        state = {
+            "rotation": 0,
+            "zoom": 1.0,
+            "pil_image": None,
+            "pdf_doc": None,
+        }
+
+        bill_loader = BillFetchThread(self, req_id)
+
+        def render_current_view():
+            for i in reversed(range(content_layout.count())):
+                w = content_layout.itemAt(i).widget()
+                if w:
+                    w.deleteLater()
+
+            if state["pil_image"] is not None:
+                img = state["pil_image"]
+                if state["rotation"] != 0:
+                    img = img.rotate(-state["rotation"], expand=True)
+
+                w, h = img.size
+                scale = state["zoom"]
+                new_w = max(100, int(w * scale))
+                new_h = max(100, int(h * scale))
+
+                img_rgb = img.convert("RGB") if img.mode != "RGB" else img
+                qimg = QImage(img_rgb.tobytes(), img_rgb.width, img_rgb.height, img_rgb.width * 3, QImage.Format_RGB888).copy()
+                pixmap = QPixmap.fromImage(qimg)
+                scaled_pixmap = pixmap.scaled(new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+                scroll = QScrollArea()
+                scroll.setWidgetResizable(True)
+                scroll.setStyleSheet("background-color: #0f172a; border: none;")
+
+                center_widget = QWidget()
+                center_widget.setStyleSheet("background-color: #0f172a;")
+                center_layout = QVBoxLayout(center_widget)
+                center_layout.setContentsMargins(16, 16, 16, 16)
+                center_layout.setAlignment(Qt.AlignCenter)
+
+                img_label = QLabel()
+                img_label.setAlignment(Qt.AlignCenter)
+                img_label.setStyleSheet("background-color: transparent; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 4px;")
+                img_label.setPixmap(scaled_pixmap)
+                center_layout.addWidget(img_label)
+
+                scroll.setWidget(center_widget)
+                content_layout.addWidget(scroll)
+
+            elif state["pdf_doc"] is not None:
+                pdf_doc = state["pdf_doc"]
+                scroll = QScrollArea()
+                scroll.setWidgetResizable(True)
+                scroll.setStyleSheet("background-color: #0f172a; border: none;")
+
+                pages_widget = QWidget()
+                pages_widget.setStyleSheet("background-color: #0f172a;")
+                pages_layout = QVBoxLayout(pages_widget)
+                pages_layout.setContentsMargins(16, 16, 16, 16)
+                pages_layout.setSpacing(16)
+                pages_layout.setAlignment(Qt.AlignCenter)
+
+                zoom_matrix = fitz.Matrix(1.5 * state["zoom"], 1.5 * state["zoom"]).prerotate(state["rotation"])
+                for page in pdf_doc:
+                    pix = page.get_pixmap(matrix=zoom_matrix, alpha=False)
+                    image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
+                    page_label = QLabel()
+                    page_label.setAlignment(Qt.AlignCenter)
+                    page_label.setPixmap(QPixmap.fromImage(image))
+                    page_label.setStyleSheet("border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 4px;")
+                    pages_layout.addWidget(page_label)
+
+                scroll.setWidget(pages_widget)
+                content_layout.addWidget(scroll)
+
+        def on_rotate_left():
+            state["rotation"] = (state["rotation"] - 90) % 360
+            render_current_view()
+
+        def on_rotate_right():
+            state["rotation"] = (state["rotation"] + 90) % 360
+            render_current_view()
+
+        def on_zoom_in():
+            state["zoom"] = min(3.0, state["zoom"] * 1.25)
+            render_current_view()
+
+        def on_zoom_out():
+            state["zoom"] = max(0.25, state["zoom"] / 1.25)
+            render_current_view()
+
+        rotate_left_btn.clicked.connect(on_rotate_left)
+        rotate_right_btn.clicked.connect(on_rotate_right)
+        zoom_in_btn.clicked.connect(on_zoom_in)
+        zoom_out_btn.clicked.connect(on_zoom_out)
+
+        def on_bill_loaded(req_id: int, content: bytes, filename: str, content_type: str) -> None:
+            status_label.setText(f"File: {filename}")
+            status_label.setStyleSheet("color: #38bdf8; font-size: 11px;")
+
+            if self._is_pdf_payload(content, filename, content_type):
+                if fitz is None:
+                    msg_label = QLabel("PDF viewing unavailable. Click 'Download PDF' to save.")
+                    msg_label.setAlignment(Qt.AlignCenter)
+                    msg_label.setStyleSheet("color: #f8fafc; font-size: 13px;")
+                    content_layout.addWidget(msg_label)
+                    return
+                try:
+                    pdf_doc = fitz.open(stream=content, filetype="pdf")
+                    if pdf_doc.page_count == 0:
+                        raise ValueError("PDF is empty")
+                    state["pdf_doc"] = pdf_doc
+                    status_label.setText(f"File: {filename} (PDF, {pdf_doc.page_count} page(s))")
+                    render_current_view()
+                except Exception as exc:
+                    msg_label = QLabel(f"Failed to render PDF: {exc}")
+                    msg_label.setAlignment(Qt.AlignCenter)
+                    msg_label.setStyleSheet("color: #ef4444; font-size: 12px;")
+                    content_layout.addWidget(msg_label)
+
+            elif self._is_image_payload(content, filename, content_type):
+                if Image is None:
+                    msg_label = QLabel("Image processing unavailable. Click 'Download PDF' to save.")
+                    msg_label.setAlignment(Qt.AlignCenter)
+                    msg_label.setStyleSheet("color: #f8fafc; font-size: 13px;")
+                    content_layout.addWidget(msg_label)
+                    return
+                try:
+                    pil_img = Image.open(io.BytesIO(content))
+                    if ImageOps is not None:
+                        pil_img = ImageOps.exif_transpose(pil_img)
+                    state["pil_image"] = pil_img
+                    if pil_img.width > 0:
+                        state["zoom"] = min(1.0, 950.0 / float(pil_img.width))
+                    else:
+                        state["zoom"] = 1.0
+                    render_current_view()
+                except Exception as exc:
+                    msg_label = QLabel(f"Failed to render image: {exc}")
+                    msg_label.setAlignment(Qt.AlignCenter)
+                    msg_label.setStyleSheet("color: #ef4444; font-size: 12px;")
+                    content_layout.addWidget(msg_label)
+            else:
+                msg_label = QLabel("Unsupported file format. Use Download PDF to view externally.")
+                msg_label.setAlignment(Qt.AlignCenter)
+                msg_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
+                content_layout.addWidget(msg_label)
+
+        def on_bill_failed(req_id: int, err: str) -> None:
+            status_label.setText(f"Error: {err}")
+            status_label.setStyleSheet("color: #ef4444; font-size: 11px;")
+            msg_label = QLabel(f"Failed to load bill: {err}")
+            msg_label.setAlignment(Qt.AlignCenter)
+            msg_label.setStyleSheet("color: #ef4444; font-size: 13px;")
+            content_layout.addWidget(msg_label)
+
+        bill_loader.loaded.connect(on_bill_loaded)
+        bill_loader.failed.connect(on_bill_failed)
+        bill_loader.start()
 
         dialog.showMaximized()
         dialog.exec()
@@ -2601,6 +3926,16 @@ class AdminPanelPySide6(QMainWindow):
                 return
             self._download_bill_as_pdf(req_id, dialog)
 
+        def view_detail_bill() -> None:
+            if dialog_closed["value"]:
+                return
+            self._open_bill_in_separate_window(req_id)
+
+        view_btn = QPushButton("View Bill")
+        view_btn.setStyleSheet("background-color: #0B2C5F; color: white; border: none; padding: 6px 12px;")
+        view_btn.clicked.connect(view_detail_bill)
+        action_layout.addWidget(view_btn)
+
         download_btn = QPushButton("Download Bill")
         download_btn.setStyleSheet("background-color: #155c8a; color: white; border: none; padding: 6px 12px;")
         download_btn.clicked.connect(download_detail_bill)
@@ -2990,15 +4325,45 @@ class AdminPanelPySide6(QMainWindow):
             try:
                 r = self.session.get(endpoint, allow_redirects=True, timeout=30)
                 if r.status_code == 200:
-                    ct = r.headers.get("Content-Type", "")
-                    ext = ".pdf" if "pdf" in ct else (".png" if "png" in ct else ".jpg")
+                    ct = (r.headers.get("Content-Type", "") or "").lower()
+                    content = r.content or b""
+                    if not content:
+                        QMessageBox.critical(dialog, "Document", "Document is empty.")
+                        return
+
+                    # If auth redirects return HTML, do not open as a media file.
+                    if "text/html" in ct and "/login" in (r.url or ""):
+                        QMessageBox.critical(dialog, "Document", "Session expired. Please login again.")
+                        return
+
+                    ext = ".bin"
                     cd = r.headers.get("Content-Disposition", "")
                     m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', cd, re.IGNORECASE)
                     if m:
                         ext = Path(m.group(1).strip()).suffix or ext
+                    elif "pdf" in ct or content.startswith(b"%PDF-"):
+                        ext = ".pdf"
+                    elif "png" in ct or content.startswith(b"\x89PNG\r\n\x1a\n"):
+                        ext = ".png"
+                    elif (
+                        "jpeg" in ct
+                        or "jpg" in ct
+                        or content.startswith(b"\xff\xd8\xff")
+                    ):
+                        ext = ".jpg"
+                    elif "webp" in ct or (len(content) > 12 and content.startswith(b"RIFF") and content[8:12] == b"WEBP"):
+                        ext = ".webp"
+                    elif "gif" in ct or content.startswith((b"GIF87a", b"GIF89a")):
+                        ext = ".gif"
+                    elif "bmp" in ct or content.startswith(b"BM"):
+                        ext = ".bmp"
+                    elif "tiff" in ct or content.startswith((b"II*\x00", b"MM\x00*")):
+                        ext = ".tiff"
+                    elif "html" in ct:
+                        ext = ".html"
                     import tempfile
                     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext, prefix=f"req{req_id}_{doc_type}_")
-                    tmp.write(r.content)
+                    tmp.write(content)
                     tmp.close()
                     os.startfile(tmp.name)
                 else:
