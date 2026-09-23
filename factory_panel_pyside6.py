@@ -21,7 +21,7 @@ from PySide6.QtGui import QFont, QColor, QPalette
 from glass_blue_erp_theme import apply_glass_blue_erp_theme, GlassColors, GlassStyles
 
 APP_NAME = "EMDFactoryPanel"
-DEFAULT_BASE_URL = "https://paymentapproval.onrender.com"
+DEFAULT_BASE_URL = "https://factory-purchase-approval-production.up.railway.app"
 
 APPROVAL_COLORS = {
     "Approved": ("#1f8a43", "#d4edda"),
@@ -217,7 +217,7 @@ class FactoryPanelPySide6(QMainWindow):
         apply_glass_blue_erp_theme(app)
     
     def _build_ui(self) -> None:
-        """Build the main UI layout."""
+        """Build the main UI layout with modern Fluent/SAP Fiori-inspired design."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
@@ -236,33 +236,42 @@ class FactoryPanelPySide6(QMainWindow):
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setFrameShape(QFrame.NoFrame)
         scroll_area.setStyleSheet(f"""
             QScrollArea {{
                 border: none;
                 background: transparent;
             }}
             QScrollBar:vertical {{
-                background: {GlassColors.GLASS_BG};
-                width: 10px;
-                border-radius: 5px;
+                background: rgba(255, 255, 255, 0.05);
+                width: 8px;
+                border-radius: 4px;
+                margin: 0px;
             }}
             QScrollBar::handle:vertical {{
-                background: {GlassColors.PRIMARY_ACCENT};
-                border-radius: 5px;
-                min-height: 20px;
+                background: rgba(255, 255, 255, 0.2);
+                border-radius: 4px;
+                min-height: 30px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: rgba(255, 255, 255, 0.3);
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0px;
             }}
             QScrollBar:horizontal {{
-                background: {GlassColors.GLASS_BG};
-                height: 10px;
-                border-radius: 5px;
+                background: rgba(255, 255, 255, 0.05);
+                height: 8px;
+                border-radius: 4px;
+                margin: 0px;
             }}
             QScrollBar::handle:horizontal {{
-                background: {GlassColors.PRIMARY_ACCENT};
-                border-radius: 5px;
-                min-width: 20px;
+                background: rgba(255, 255, 255, 0.2);
+                border-radius: 4px;
+                min-width: 30px;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background: rgba(255, 255, 255, 0.3);
             }}
             QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
                 width: 0px;
@@ -271,40 +280,52 @@ class FactoryPanelPySide6(QMainWindow):
         
         content_widget = QWidget()
         content_layout = QHBoxLayout(content_widget)
-        content_layout.setContentsMargins(12, 12, 12, 12)
-        content_layout.setSpacing(16)
+        content_layout.setContentsMargins(24, 24, 24, 24)
+        content_layout.setSpacing(24)
         
-        # Left panel - Tab widget for Request and Bill Upload
-        left_panel = self._create_card("Forms")
+        # Left panel - Form section (no card wrapper, more open)
+        left_panel = QWidget()
+        left_panel.setMaximumWidth(450)
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(12, 12, 12, 12)
-        left_layout.setSpacing(10)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(16)
         
-        # Tab widget
+        # Section title
+        section_title = QLabel("Forms")
+        section_title.setStyleSheet(f"""
+            QLabel {{
+                color: {GlassColors.TEXT_PRIMARY};
+                font-size: 14px;
+                font-weight: 600;
+                padding: 0px 0px 8px 0px;
+            }}
+        """)
+        left_layout.addWidget(section_title)
+        
+        # Modern tab widget - no borders, underline style
         self.tab_widget = QTabWidget()
         self.tab_widget.setStyleSheet(f"""
             QTabWidget::pane {{
                 border: none;
                 background: transparent;
+                padding-top: 4px;
             }}
             QTabBar::tab {{
-                background: {GlassColors.GLASS_BG};
-                color: {GlassColors.TEXT_SECONDARY};
-                padding: 8px 16px;
-                border: 1px solid {GlassColors.BORDER_COLOR};
-                border-bottom: none;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                margin-right: 2px;
-                font-size: 10px;
-                font-weight: bold;
+                background: transparent;
+                color: {GlassColors.TEXT_MUTED};
+                padding: 10px 20px;
+                border: none;
+                border-bottom: 2px solid transparent;
+                margin-right: 4px;
+                font-size: 11px;
+                font-weight: 500;
             }}
             QTabBar::tab:selected {{
-                background: {GlassColors.PRIMARY_ACCENT};
-                color: {GlassColors.TEXT_PRIMARY};
+                color: {GlassColors.PRIMARY_ACCENT};
+                border-bottom: 2px solid {GlassColors.PRIMARY_ACCENT};
             }}
             QTabBar::tab:hover:!selected {{
-                background: rgba(255, 255, 255, 0.1);
+                color: {GlassColors.TEXT_SECONDARY};
             }}
         """)
         
@@ -312,44 +333,68 @@ class FactoryPanelPySide6(QMainWindow):
         request_tab = QWidget()
         request_layout = QVBoxLayout(request_tab)
         request_layout.setContentsMargins(0, 0, 0, 0)
-        request_layout.setSpacing(10)
+        request_layout.setSpacing(16)
         self._build_request_form(request_layout)
-        self.tab_widget.addTab(request_tab, "📝 Purchase Request")
+        self.tab_widget.addTab(request_tab, "Purchase Request")
         
         # Bill Upload tab
         bill_upload_tab = QWidget()
         bill_upload_layout = QVBoxLayout(bill_upload_tab)
         bill_upload_layout.setContentsMargins(0, 0, 0, 0)
-        bill_upload_layout.setSpacing(10)
+        bill_upload_layout.setSpacing(16)
         self._build_bill_upload_form(bill_upload_layout)
-        self.tab_widget.addTab(bill_upload_tab, "🧾 Bill Upload")
+        self.tab_widget.addTab(bill_upload_tab, "Bill Upload")
         
         left_layout.addWidget(self.tab_widget)
         
-        # Right panel - Dashboard and table
+        # Right panel - Dashboard and table (flattened cards)
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(16)
+        right_layout.setSpacing(24)
         
-        # Action Required Dashboard
-        dashboard_card = self._create_card("⚠ Action Required")
-        dashboard_layout = QVBoxLayout(dashboard_card)
-        dashboard_layout.setContentsMargins(12, 12, 12, 12)
+        # Action Required Dashboard - flattened
+        dashboard_section = QWidget()
+        dashboard_layout = QVBoxLayout(dashboard_section)
+        dashboard_layout.setContentsMargins(0, 0, 0, 0)
+        dashboard_layout.setSpacing(12)
+        
+        dashboard_title = QLabel("Action Required")
+        dashboard_title.setStyleSheet(f"""
+            QLabel {{
+                color: {GlassColors.TEXT_PRIMARY};
+                font-size: 14px;
+                font-weight: 600;
+                padding: 0px 0px 8px 0px;
+            }}
+        """)
+        dashboard_layout.addWidget(dashboard_title)
+        
         self._build_action_dashboard(dashboard_layout)
+        right_layout.addWidget(dashboard_section)
         
-        # My Requests Table
-        table_card = self._create_card("My Requests")
-        table_layout = QVBoxLayout(table_card)
-        table_layout.setContentsMargins(12, 12, 12, 12)
+        # My Requests Table - flattened
+        table_section = QWidget()
+        table_layout = QVBoxLayout(table_section)
+        table_layout.setContentsMargins(0, 0, 0, 0)
         table_layout.setSpacing(12)
+        
+        table_title = QLabel("My Requests")
+        table_title.setStyleSheet(f"""
+            QLabel {{
+                color: {GlassColors.TEXT_PRIMARY};
+                font-size: 14px;
+                font-weight: 600;
+                padding: 0px 0px 8px 0px;
+            }}
+        """)
+        table_layout.addWidget(table_title)
+        
         self._build_requests_table(table_layout)
+        right_layout.addWidget(table_section, 1)
         
-        right_layout.addWidget(dashboard_card)
-        right_layout.addWidget(table_card, 1)  # Table takes remaining space
-        
-        content_layout.addWidget(left_panel, 0)  # Left panel fixed width
-        content_layout.addWidget(right_panel, 1)  # Right panel takes remaining space
+        content_layout.addWidget(left_panel)
+        content_layout.addWidget(right_panel, 1)
         
         scroll_area.setWidget(content_widget)
         main_layout.addWidget(scroll_area, 1)
@@ -372,42 +417,55 @@ class FactoryPanelPySide6(QMainWindow):
         return card
 
     def _clean_input_style(self, readonly: bool = False) -> str:
-        """Single-surface input style for the decluttered ERP UI."""
-        bg = "rgba(255, 255, 255, 0.06)" if not readonly else "rgba(255, 255, 255, 0.04)"
+        """Modern minimal input style for Fluent/SAP Fiori-inspired design."""
+        bg = "rgba(255, 255, 255, 0.05)" if not readonly else "rgba(255, 255, 255, 0.03)"
+        border = "1px solid rgba(255, 255, 255, 0.1)" if not readonly else "1px solid rgba(255, 255, 255, 0.05)"
         return f"""
             QLineEdit, QTextEdit, QComboBox {{
                 background: {bg};
                 color: {GlassColors.TEXT_PRIMARY};
-                padding: 9px 12px;
-                border: none;
-                border-radius: 6px;
-                selection-background-color: {GlassColors.PRIMARY};
+                padding: 10px 14px;
+                border: {border};
+                border-radius: 8px;
+                selection-background-color: {GlassColors.PRIMARY_ACCENT};
+                font-size: 11px;
             }}
             QLineEdit:focus, QTextEdit:focus, QComboBox:focus {{
-                background: rgba(255, 255, 255, 0.10);
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            }}
+            QLineEdit:hover, QTextEdit:hover, QComboBox:hover {{
+                border: 1px solid rgba(255, 255, 255, 0.15);
             }}
             QComboBox::drop-down {{
                 border: none;
-                width: 24px;
+                width: 28px;
             }}
             QComboBox::down-arrow {{
                 image: none;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 5px solid {GlassColors.TEXT_SECONDARY};
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 4px solid {GlassColors.TEXT_SECONDARY};
+            }}
+            QComboBox QAbstractItemView {{
+                background: {GlassColors.BG_DARK};
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                selection-background-color: rgba(74, 144, 226, 0.3);
+                selection-color: {GlassColors.TEXT_PRIMARY};
+                padding: 4px;
             }}
         """
 
     def _clean_group_style(self) -> str:
-        """Group boxes with title only, no decorative frame."""
+        """Minimal group box style with no borders."""
         return f"""
             QGroupBox {{
                 color: {GlassColors.TEXT_PRIMARY};
-                font-weight: bold;
+                font-weight: 600;
                 font-size: 11px;
                 border: none;
-                margin-top: 14px;
-                padding-top: 10px;
+                margin-top: 16px;
+                padding-top: 8px;
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
@@ -753,14 +811,9 @@ class FactoryPanelPySide6(QMainWindow):
         parent_layout.addStretch()
     
     def _build_action_dashboard(self, parent_layout: QVBoxLayout) -> None:
-        """Build the action required dashboard."""
+        """Build the action required dashboard with flattened KPI cards."""
         dashboard_layout = QHBoxLayout()
-        dashboard_layout.setSpacing(12)
-        
-        # Dashboard title
-        title = QLabel("Action Required")
-        title.setStyleSheet(f"color: {GlassColors.TEXT_PRIMARY}; font-size: 14px; font-weight: bold;")
-        parent_layout.addWidget(title)
+        dashboard_layout.setSpacing(16)
         
         # Approved Requests
         approved_card = self._create_kpi_card("Approved Requests", str(self._dash_pending), "Ready for completion", "#15803d")
@@ -790,16 +843,19 @@ class FactoryPanelPySide6(QMainWindow):
         parent_layout.addWidget(self.dashboard_note)
     
     def _create_kpi_card(self, title: str, value: str, subtitle: str, text_color: str) -> QFrame:
-        """Create a clean KPI card with no inner rectangle."""
+        """Create a flattened KPI card with minimal styling."""
         card = QFrame()
         card.setObjectName("FactoryKpiCard")
-        card.setMinimumHeight(80)
+        card.setMinimumHeight(90)
         card.setStyleSheet(f"""
             QFrame#FactoryKpiCard {{
-                background: rgba(255, 255, 255, 0.08);
-                border: none;
-                border-left: 5px solid {text_color};
-                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 12px;
+            }}
+            QFrame#FactoryKpiCard:hover {{
+                background: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.12);
             }}
         """)
         
@@ -825,14 +881,14 @@ class FactoryPanelPySide6(QMainWindow):
         return card
     
     def _build_requests_table(self, parent_layout: QVBoxLayout) -> None:
-        """Build the My Requests table with filters."""
+        """Build the My Requests table with filters and modern styling."""
         # Filter bar
         filter_layout = QHBoxLayout()
         filter_layout.setSpacing(12)
         
         # Approval filter
         approval_label = QLabel("Approval:")
-        approval_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-weight: bold; font-size: 10px;")
+        approval_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-weight: 500; font-size: 11px;")
         filter_layout.addWidget(approval_label)
         
         self.approval_filter = QComboBox()
@@ -843,7 +899,7 @@ class FactoryPanelPySide6(QMainWindow):
         
         # Completion filter
         completion_label = QLabel("Completion:")
-        completion_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-weight: bold; font-size: 10px;")
+        completion_label.setStyleSheet(f"color: {GlassColors.TEXT_SECONDARY}; font-weight: 500; font-size: 11px;")
         filter_layout.addWidget(completion_label)
         
         self.completion_filter = QComboBox()
@@ -867,15 +923,49 @@ class FactoryPanelPySide6(QMainWindow):
         filter_layout.addStretch()
         parent_layout.addLayout(filter_layout)
         
-        # Table
+        # Table with modern styling
         self.table = QTableWidget()
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(["ID", "Date", "Type", "Purpose", "Amount", "Approval", "Completion", "Actions"])
-        self.table.setStyleSheet(GlassStyles.table_style())
+        self.table.setStyleSheet(f"""
+            QTableWidget {{
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                gridline-color: rgba(255, 255, 255, 0.05);
+                color: {GlassColors.TEXT_PRIMARY};
+                font-size: 11px;
+            }}
+            QTableWidget::item {{
+                padding: 8px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            }}
+            QTableWidget::item:selected {{
+                background: rgba(74, 144, 226, 0.2);
+                color: {GlassColors.TEXT_PRIMARY};
+            }}
+            QTableWidget::item:hover {{
+                background: rgba(255, 255, 255, 0.04);
+            }}
+            QHeaderView::section {{
+                background: rgba(255, 255, 255, 0.06);
+                color: {GlassColors.TEXT_PRIMARY};
+                padding: 10px 8px;
+                border: none;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                font-weight: 600;
+                font-size: 10px;
+            }}
+            QTableCornerButton::section {{
+                background: rgba(255, 255, 255, 0.06);
+                border: none;
+            }}
+        """)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setShowGrid(True)
         
         # Set column widths
         self.table.setColumnWidth(0, 50)   # ID
